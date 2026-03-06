@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut } from 'lucide-react';
+import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut, Mail, Lock } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where } from 'firebase/firestore';
-import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where, getDocs } from 'firebase/firestore';
+import { signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword, createUserWithEmailAndPassword, deleteUser, sendEmailVerification } from 'firebase/auth';
 import { db, auth, googleProvider } from './firebase';
 import { Project, TimeEntry, ActiveTimer } from './types';
 import { formatDuration, formatTime, formatDateStr, groupByDay } from './utils';
 import { ProjectSelector } from './components/ProjectSelector';
 import { TimerDisplay } from './components/TimerDisplay';
 
-type View = 'tracker' | 'projects' | 'reports';
+type View = 'tracker' | 'projects' | 'reports' | 'settings';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<View>('tracker');
@@ -30,6 +30,20 @@ export default function App() {
   const [newProjectName, setNewProjectName] = useState('');
   const [selectedChartProject, setSelectedChartProject] = useState<string | null>(null);
 
+  // Email/Password Auth State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [verificationSent, setVerificationSent] = useState(false);
+  const [isEmailVerified, setIsEmailVerified] = useState(false);
+  const [verificationError, setVerificationError] = useState('');
+  const [isCheckingVerification, setIsCheckingVerification] = useState(false);
+
+  // Delete Account Modal State
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+
   useEffect(() => {
     const handleClickOutside = () => setOpenDropdownId(null);
     document.addEventListener('click', handleClickOutside);
@@ -40,6 +54,7 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
+      setIsEmailVerified(currentUser?.emailVerified || false);
       if (!currentUser) setIsLoading(false);
     });
     return () => unsubscribe();
@@ -65,10 +80,10 @@ export default function App() {
       setEntries(ents);
     }, (error) => console.error("Entries error:", error));
 
-    const qTimer = query(collection(db, 'activeTimers'), where('userId', '==', user.uid));
-    const unsubscribeTimer = onSnapshot(qTimer, (snapshot) => {
-      if (!snapshot.empty) {
-        const timerData = snapshot.docs[0].data() as ActiveTimer;
+    const timerRef = doc(db, 'activeTimers', user.uid);
+    const unsubscribeTimer = onSnapshot(timerRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const timerData = docSnap.data() as ActiveTimer;
         if (timerData.isActive) {
           setActiveTimer(timerData);
         } else {
@@ -116,12 +131,12 @@ export default function App() {
 
   const handleDeleteProject = async (id: string) => {
     await deleteDoc(doc(db, 'projects', id));
-    // Update all entries that used this project to have no project
-    entries.forEach(async (e) => {
-      if (e.projectId === id) {
-        await updateDoc(doc(db, 'entries', e.id), { projectId: null });
-      }
-    });
+    // Delete all entries that used this project
+    const deletionPromises = entries
+      .filter(e => e.projectId === id)
+      .map(e => deleteDoc(doc(db, 'entries', e.id)));
+    await Promise.all(deletionPromises);
+    
     if (draftProjectId === id) setDraftProjectId(null);
     if (activeTimer?.projectId === id) updateActiveTimer({ projectId: null });
   };
@@ -202,6 +217,76 @@ export default function App() {
     }
   };
 
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      if (isSignUp) {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        await sendEmailVerification(userCredential.user);
+        setVerificationSent(true);
+      } else {
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        if (!userCredential.user.emailVerified) {
+          // The UI will handle showing the verification screen
+        }
+      }
+    } catch (error: any) {
+      if (error.code === 'auth/operation-not-allowed') {
+        setAuthError("Email/Password sign-in is not enabled in Firebase Console.");
+      } else if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found') {
+        setAuthError("Incorrect email or password. Please check your credentials or sign up.");
+      } else if (error.code === 'auth/email-already-in-use') {
+        setAuthError("An account already exists with this email.");
+      } else if (error.code === 'auth/weak-password') {
+        setAuthError("Firebase requires passwords to be at least 6 characters long.");
+      } else {
+        setAuthError(error.message);
+      }
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    setIsDeleteModalOpen(true);
+    setDeleteError('');
+  };
+
+  const executeDeleteAccount = async () => {
+    if (!user) return;
+    try {
+      setIsLoading(true);
+      setDeleteError('');
+      
+      // 1. Delete all entries
+      const entriesQuery = query(collection(db, 'entries'), where('userId', '==', user.uid));
+      const entriesSnapshot = await getDocs(entriesQuery);
+      const entryDeletions = entriesSnapshot.docs.map(d => deleteDoc(d.ref));
+
+      // 2. Delete all projects
+      const projectsQuery = query(collection(db, 'projects'), where('userId', '==', user.uid));
+      const projectsSnapshot = await getDocs(projectsQuery);
+      const projectDeletions = projectsSnapshot.docs.map(d => deleteDoc(d.ref));
+
+      // 3. Delete active timer
+      const activeTimerRef = doc(db, 'activeTimers', user.uid);
+
+      await Promise.all([...entryDeletions, ...projectDeletions, deleteDoc(activeTimerRef)]);
+
+      // 4. Delete user auth account
+      await deleteUser(user);
+      setIsDeleteModalOpen(false);
+      // Firebase auth state listener will automatically handle the redirect to login screen
+    } catch (error: any) {
+      console.error("Error deleting account:", error);
+      setIsLoading(false);
+      if (error.code === 'auth/requires-recent-login') {
+        setDeleteError("For security reasons, please sign out and sign in again before deleting your account.");
+      } else {
+        setDeleteError("Failed to delete account: " + error.message);
+      }
+    }
+  };
+
   const groupedEntries = groupByDay(entries);
 
   if (isLoading) {
@@ -220,20 +305,75 @@ export default function App() {
             <Clock className="w-8 h-8 text-blue-500" />
           </div>
           <h1 className="text-2xl font-bold text-gray-800 mb-2">Trackify</h1>
-          <p className="text-gray-500 mb-8">Sign in to sync your time across all your devices securely.</p>
+          <p className="text-gray-500 mb-6 text-sm">Sign in to sync your time across all your devices securely.</p>
+          
+          {authError && (
+            <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-lg border border-red-100 text-left">
+              {authError}
+            </div>
+          )}
+
+          <form onSubmit={handleEmailAuth} className="flex flex-col gap-3 mb-6">
+            <div className="relative">
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+              <input 
+                type="email" 
+                placeholder="Email address" 
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-gray-700"
+              />
+            </div>
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+              <input 
+                type="password" 
+                placeholder="Password" 
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-gray-700"
+              />
+            </div>
+            <button 
+              type="submit"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-xl transition-colors mt-1"
+            >
+              {isSignUp ? 'Create Account' : 'Sign In'}
+            </button>
+            <button 
+              type="button"
+              onClick={() => { setIsSignUp(!isSignUp); setAuthError(''); }}
+              className="text-sm text-blue-600 hover:text-blue-800 transition-colors mt-1"
+            >
+              {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
+            </button>
+          </form>
+
+          <div className="relative flex items-center py-2 mb-6">
+            <div className="flex-grow border-t border-gray-200"></div>
+            <span className="flex-shrink-0 mx-4 text-gray-400 text-xs font-medium uppercase">Or continue with</span>
+            <div className="flex-grow border-t border-gray-200"></div>
+          </div>
+
           <button
             onClick={async () => {
+              setAuthError('');
               try {
                 await signInWithPopup(auth, googleProvider);
               } catch (error: any) {
-                console.error("Auth Error:", error);
                 if (error.code === 'auth/configuration-not-found') {
-                  alert("Authentication failed: Google Sign-In is not enabled in your Firebase Console. Please go to Authentication -> Sign-in method and enable Google.");
+                  setAuthError("Google Sign-In is not enabled in your Firebase Console.");
                 } else if (error.code === 'auth/unauthorized-domain') {
                   const currentDomain = window.location.hostname;
-                  alert(`Authentication failed: The domain "${currentDomain}" is not authorized for OAuth operations.\n\nTo fix this:\n1. Go to Firebase Console -> Authentication -> Settings -> Authorized domains\n2. Click "Add domain"\n3. Paste exactly this: ${currentDomain}\n4. Click "Add"\n5. Refresh this page and try again.`);
+                  setAuthError(`Domain "${currentDomain}" is not authorized. Please add it in Firebase Console -> Authentication -> Settings -> Authorized domains.`);
+                } else if (error.code === 'auth/network-request-failed') {
+                  setAuthError("Network error. Please check your internet connection or disable ad blockers.");
+                } else if (error.code === 'auth/popup-closed-by-user') {
+                  // User closed the popup, no need to show an error
                 } else {
-                  alert(`Authentication failed: ${error.message}`);
+                  setAuthError(`Authentication failed: ${error.message}`);
                 }
               }
             }}
@@ -245,7 +385,91 @@ export default function App() {
               <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
               <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
             </svg>
-            Continue with Google
+            Google
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (user && !isEmailVerified && user.providerData.some(p => p.providerId === 'password')) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-xl text-center max-w-sm w-full border border-gray-100">
+          <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Mail className="w-8 h-8 text-blue-500" />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-800 mb-2">Verify your email</h1>
+          <p className="text-gray-500 mb-6 text-sm">
+            We've sent a verification email to <strong className="text-gray-700">{user.email}</strong>. Please check your inbox and click the link to activate your account.
+          </p>
+          
+          {verificationSent && (
+            <div className="mb-4 p-3 bg-green-50 text-green-700 text-sm rounded-lg border border-green-100">
+              Verification email sent! Please check your inbox.
+            </div>
+          )}
+
+          {verificationError && (
+            <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-lg border border-red-100">
+              {verificationError}
+            </div>
+          )}
+
+          <button 
+            onClick={async () => {
+              if (user) {
+                setIsCheckingVerification(true);
+                setVerificationError('');
+                try {
+                  await user.reload();
+                  if (auth.currentUser?.emailVerified) {
+                    setIsEmailVerified(true);
+                  } else {
+                    setVerificationError("Your email is not verified yet. Please check your inbox and click the verification link.");
+                  }
+                } catch (error) {
+                  console.error("Error reloading user:", error);
+                }
+                setIsCheckingVerification(false);
+              }
+            }} 
+            disabled={isCheckingVerification}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-xl transition-colors mb-3 flex items-center justify-center gap-2 disabled:opacity-70"
+          >
+            {isCheckingVerification ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                Checking...
+              </>
+            ) : (
+              "I've verified my email"
+            )}
+          </button>
+          <button 
+            onClick={async () => { 
+              try {
+                setVerificationError('');
+                await sendEmailVerification(user); 
+                setVerificationSent(true);
+              } catch (e: any) {
+                if (e.code === 'auth/too-many-requests') {
+                  setVerificationError("Please wait a moment before requesting another email.");
+                } else {
+                  setVerificationError(e.message);
+                }
+              }
+            }} 
+            className="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2.5 rounded-xl transition-colors mb-6"
+          >
+            Resend Email
+          </button>
+          
+          <button 
+            onClick={() => signOut(auth)} 
+            className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
+          >
+            Sign out and use another account
           </button>
         </div>
       </div>
@@ -346,11 +570,23 @@ export default function App() {
           >
             <BarChart2 size={18} /> Reports
           </button>
+          <button 
+            onClick={() => setCurrentView('settings')}
+            className={`flex items-center gap-3 px-3 py-2 rounded-lg font-medium transition-colors ${currentView === 'settings' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+          >
+            <Settings size={18} /> Settings
+          </button>
         </nav>
         <div className="p-4 border-t border-gray-200 flex flex-col gap-2">
           <div className="flex items-center gap-3 px-3 py-2 text-sm text-gray-500 font-medium">
-            <img src={user?.photoURL || ''} alt="" className="w-6 h-6 rounded-full bg-gray-200" />
-            <span className="truncate">{user?.displayName || 'User'}</span>
+            {user?.photoURL ? (
+              <img src={user.photoURL} alt={user.displayName || 'User'} className="w-6 h-6 rounded-full bg-gray-200" referrerPolicy="no-referrer" />
+            ) : (
+              <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold">
+                {(user?.displayName || user?.email || 'U').charAt(0).toUpperCase()}
+              </div>
+            )}
+            <span className="truncate">{user?.displayName || user?.email || 'User'}</span>
           </div>
           <button onClick={() => signOut(auth)} className="flex items-center gap-3 px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg font-medium transition-colors w-full text-left">
             Sign Out
@@ -1013,6 +1249,62 @@ export default function App() {
             </div>
           </div>
         )}
+        {currentView === 'settings' && (
+          <div className="flex-1 overflow-y-auto bg-gray-50 p-4 md:p-8">
+            <div className="max-w-2xl mx-auto">
+              <h2 className="text-2xl font-bold text-gray-800 mb-6">Settings</h2>
+              
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+                <div className="p-6 border-b border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-1">Account Information</h3>
+                  <p className="text-sm text-gray-500 mb-4">Manage your account details and preferences.</p>
+                  
+                  <div className="flex items-center gap-4">
+                    {user?.photoURL ? (
+                      <img src={user.photoURL} alt={user.displayName || 'User'} className="w-16 h-16 rounded-full bg-gray-200" referrerPolicy="no-referrer" />
+                    ) : (
+                      <div className="w-16 h-16 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-2xl font-bold">
+                        {(user?.displayName || user?.email || 'U').charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div>
+                      <div className="font-medium text-gray-800 text-lg">{user?.displayName || 'User'}</div>
+                      <div className="text-gray-500">{user?.email}</div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="p-6 bg-gray-50 flex justify-end">
+                  <button 
+                    onClick={() => signOut(auth)} 
+                    className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium transition-colors"
+                  >
+                    Sign Out
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl shadow-sm border border-red-200 overflow-hidden">
+                <div className="p-6 border-b border-red-100">
+                  <h3 className="text-lg font-semibold text-red-600 mb-1">Danger Zone</h3>
+                  <p className="text-sm text-gray-500">Permanently delete your account and all associated data.</p>
+                </div>
+                
+                <div className="p-6 bg-red-50/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="text-sm text-gray-600 max-w-md">
+                    Once you delete your account, there is no going back. All your tracked time, projects, and settings will be permanently removed from our servers.
+                  </div>
+                  <button 
+                    onClick={handleDeleteAccount} 
+                    className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium transition-colors whitespace-nowrap flex-shrink-0"
+                  >
+                    Delete Account
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Bottom Navigation (Mobile) */}
@@ -1039,13 +1331,54 @@ export default function App() {
           <span className="text-[10px] font-medium mt-1">Reports</span>
         </button>
         <button 
-          onClick={() => signOut(auth)} 
-          className="flex flex-col items-center justify-center w-full h-full text-red-500 hover:bg-red-50 transition-colors"
+          onClick={() => setCurrentView('settings')} 
+          className={`flex flex-col items-center justify-center w-full h-full ${currentView === 'settings' ? 'text-blue-600' : 'text-gray-500'}`}
         >
-          <LogOut size={20} />
-          <span className="text-[10px] font-medium mt-1">Sign Out</span>
+          <Settings size={20} />
+          <span className="text-[10px] font-medium mt-1">Settings</span>
         </button>
       </nav>
+      {/* Delete Account Modal */}
+      {isDeleteModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-in fade-in zoom-in duration-200">
+            <h3 className="text-xl font-bold text-gray-900 mb-2">Delete Account?</h3>
+            <p className="text-gray-600 mb-6 text-sm">
+              This will permanently delete your account and <strong>ALL</strong> your tracked time and projects. This action <strong>CANNOT</strong> be undone. Are you sure?
+            </p>
+            
+            {deleteError && (
+              <div className="mb-6 p-3 bg-red-50 text-red-600 text-sm rounded-lg border border-red-100">
+                {deleteError}
+              </div>
+            )}
+            
+            <div className="flex justify-end gap-3">
+              <button 
+                onClick={() => setIsDeleteModalOpen(false)} 
+                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+                disabled={isLoading}
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={executeDeleteAccount} 
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                    Deleting...
+                  </>
+                ) : (
+                  'Yes, Delete My Account'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
