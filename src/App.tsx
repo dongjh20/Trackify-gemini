@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut, Mail, Lock } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where, getDocs } from 'firebase/firestore';
@@ -39,6 +39,30 @@ export default function App() {
   const [isEmailVerified, setIsEmailVerified] = useState(false);
   const [verificationError, setVerificationError] = useState('');
   const [isCheckingVerification, setIsCheckingVerification] = useState(false);
+  const [reportTimeRange, setReportTimeRange] = useState<'day' | 'week' | 'month' | 'year'>('week');
+
+  const filteredReportEntries = useMemo(() => {
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    
+    let startTimeLimit = 0;
+    switch (reportTimeRange) {
+      case 'day':
+        startTimeLimit = startOfToday;
+        break;
+      case 'week':
+        startTimeLimit = startOfToday - 6 * 24 * 60 * 60 * 1000;
+        break;
+      case 'month':
+        startTimeLimit = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+        break;
+      case 'year':
+        startTimeLimit = new Date(now.getFullYear(), 0, 1).getTime();
+        break;
+    }
+    
+    return entries.filter(e => e.startTime >= startTimeLimit);
+  }, [entries, reportTimeRange]);
 
   // Delete Account Modal State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -846,23 +870,36 @@ export default function App() {
         {currentView === 'reports' && (
           <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
             <div className="max-w-5xl mx-auto flex flex-col gap-6">
-              <h1 className="text-2xl font-bold text-gray-800">Reports</h1>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <h1 className="text-2xl font-bold text-gray-800">Reports</h1>
+                <div className="flex bg-gray-200 p-1 rounded-lg self-start sm:self-auto">
+                  {(['day', 'week', 'month', 'year'] as const).map(range => (
+                    <button
+                      key={range}
+                      onClick={() => setReportTimeRange(range)}
+                      className={`px-4 py-1.5 text-sm font-medium rounded-md capitalize transition-colors ${reportTimeRange === range ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      {range === 'day' ? 'Today' : range === 'week' ? 'Last 7 Days' : `This ${range}`}
+                    </button>
+                  ))}
+                </div>
+              </div>
               
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 md:gap-6">
                 <div className="bg-white p-6 border border-gray-200 rounded-lg shadow-sm flex flex-col gap-2">
                   <span className="text-sm text-gray-500 font-medium uppercase tracking-wider">Total Time</span>
                   <span className="text-3xl font-mono font-bold text-gray-800">
-                    {formatDuration(entries.reduce((acc, e) => acc + e.duration, 0))}
+                    {formatDuration(filteredReportEntries.reduce((acc, e) => acc + e.duration, 0))}
                   </span>
                 </div>
                 <div className="bg-white p-6 border border-gray-200 rounded-lg shadow-sm flex flex-col gap-2">
                   <span className="text-sm text-gray-500 font-medium uppercase tracking-wider">Total Entries</span>
-                  <span className="text-3xl font-bold text-gray-800">{entries.length}</span>
+                  <span className="text-3xl font-bold text-gray-800">{filteredReportEntries.length}</span>
                 </div>
                 <div className="bg-white p-6 border border-gray-200 rounded-lg shadow-sm flex flex-col gap-2">
                   <span className="text-sm text-gray-500 font-medium uppercase tracking-wider">Active Projects</span>
                   <span className="text-3xl font-bold text-gray-800">
-                    {new Set(entries.map(e => e.projectId).filter(Boolean)).size}
+                    {new Set(filteredReportEntries.map(e => e.projectId).filter(Boolean)).size}
                   </span>
                 </div>
               </div>
@@ -875,13 +912,13 @@ export default function App() {
                 <div className="p-4 flex flex-col md:flex-row gap-6">
                   <div className="w-full md:w-1/2 h-80">
                     {(() => {
-                      const totalDuration = entries.reduce((acc, e) => acc + e.duration, 0);
+                      const totalDuration = filteredReportEntries.reduce((acc, e) => acc + e.duration, 0);
                       const chartData = projects.map(p => {
-                        const duration = entries.filter(e => e.projectId === p.id).reduce((acc, e) => acc + e.duration, 0);
+                        const duration = filteredReportEntries.filter(e => e.projectId === p.id).reduce((acc, e) => acc + e.duration, 0);
                         return { name: p.name, value: duration, color: p.color, id: p.id };
                       }).filter(d => d.value > 0);
 
-                      const noProjectDuration = entries.filter(e => !e.projectId).reduce((acc, e) => acc + e.duration, 0);
+                      const noProjectDuration = filteredReportEntries.filter(e => !e.projectId).reduce((acc, e) => acc + e.duration, 0);
                       if (noProjectDuration > 0) {
                         chartData.push({ name: 'No Project', value: noProjectDuration, color: '#9ca3af', id: 'no-project' });
                       }
@@ -973,8 +1010,8 @@ export default function App() {
                       <div className="flex flex-col h-full overflow-hidden">
                         {(() => {
                           const projectEntries = selectedChartProject === 'no-project' 
-                            ? entries.filter(e => !e.projectId) 
-                            : entries.filter(e => e.projectId === selectedChartProject);
+                            ? filteredReportEntries.filter(e => !e.projectId) 
+                            : filteredReportEntries.filter(e => e.projectId === selectedChartProject);
                           
                           const projectTotalDuration = projectEntries.reduce((acc, e) => acc + e.duration, 0);
                           
@@ -1089,52 +1126,57 @@ export default function App() {
               {/* Bar Chart Section */}
               <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden mt-4">
                 <div className="p-4 border-b border-gray-200 bg-gray-50">
-                  <h2 className="font-semibold text-gray-800">Last 7 Days</h2>
+                  <h2 className="font-semibold text-gray-800">Time by Project (Bar Chart)</h2>
                 </div>
                 <div className="p-4 h-72">
                   {(() => {
-                    const last7Days = Array.from({ length: 7 }).map((_, i) => {
-                      const d = new Date();
-                      d.setDate(d.getDate() - 6 + i);
-                      return d;
-                    });
+                    const chartData = projects.map(p => {
+                      const duration = filteredReportEntries.filter(e => e.projectId === p.id).reduce((acc, e) => acc + e.duration, 0);
+                      return { name: p.name, value: duration, color: p.color, id: p.id };
+                    }).filter(d => d.value > 0);
 
-                    const barChartData = last7Days.map(date => {
-                      const dayEntries = entries.filter(e => {
-                        const d = new Date(e.startTime);
-                        return d.getFullYear() === date.getFullYear() && 
-                               d.getMonth() === date.getMonth() && 
-                               d.getDate() === date.getDate();
-                      });
-                      const duration = dayEntries.reduce((acc, e) => acc + e.duration, 0);
-                      return {
-                        name: date.toLocaleDateString('en-US', { weekday: 'short' }),
-                        fullDate: date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
-                        durationMs: duration,
-                        durationHours: Number((duration / (1000 * 60 * 60)).toFixed(2))
-                      };
-                    });
+                    const noProjectDuration = filteredReportEntries.filter(e => !e.projectId).reduce((acc, e) => acc + e.duration, 0);
+                    if (noProjectDuration > 0) {
+                      chartData.push({ name: 'No Project', value: noProjectDuration, color: '#9ca3af', id: 'no-project' });
+                    }
+
+                    chartData.sort((a, b) => b.value - a.value);
 
                     const CustomBarTooltip = ({ active, payload }: any) => {
                       if (active && payload && payload.length) {
                         return (
                           <div className="bg-white p-2 border border-gray-200 shadow-sm rounded text-sm">
-                            <p className="font-medium text-gray-800">{payload[0].payload.fullDate}</p>
-                            <p className="text-gray-600 font-mono">{formatDuration(payload[0].payload.durationMs)}</p>
+                            <p className="font-medium text-gray-800">{payload[0].payload.name}</p>
+                            <p className="text-gray-600 font-mono">{formatDuration(payload[0].value)}</p>
                           </div>
                         );
                       }
                       return null;
                     };
 
-                    return entries.length > 0 ? (
+                    return chartData.length > 0 ? (
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={barChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} dy={10} />
-                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} />
+                          <XAxis 
+                            dataKey="name" 
+                            axisLine={false} 
+                            tickLine={false} 
+                            tick={{ fontSize: 12, fill: '#6b7280' }} 
+                            dy={10} 
+                          />
+                          <YAxis 
+                            tickFormatter={(val) => `${Math.floor(val / 3600000)}h`} 
+                            axisLine={false} 
+                            tickLine={false} 
+                            tick={{ fontSize: 12, fill: '#6b7280' }} 
+                          />
                           <RechartsTooltip content={<CustomBarTooltip />} cursor={{ fill: '#f3f4f6' }} />
-                          <Bar dataKey="durationHours" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={50} />
+                          <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={60}>
+                            {chartData.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     ) : (
@@ -1146,16 +1188,16 @@ export default function App() {
 
               <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden mt-4">
                 <div className="p-4 border-b border-gray-200 bg-gray-50">
-                  <h2 className="font-semibold text-gray-800">Time by Project</h2>
+                  <h2 className="font-semibold text-gray-800">Project Details</h2>
                 </div>
                 <div className="p-4 flex flex-col gap-4">
                   {projects.map(project => {
-                    const projectEntries = entries.filter(e => e.projectId === project.id);
+                    const projectEntries = filteredReportEntries.filter(e => e.projectId === project.id);
                     const projectTime = projectEntries.reduce((acc, e) => acc + e.duration, 0);
                     
                     if (projectTime === 0) return null;
 
-                    const totalTime = entries.reduce((acc, e) => acc + e.duration, 0);
+                    const totalTime = filteredReportEntries.reduce((acc, e) => acc + e.duration, 0);
                     const percentage = totalTime > 0 ? (projectTime / totalTime) * 100 : 0;
                     const isExpanded = expandedReportProjects.includes(project.id);
 
@@ -1195,12 +1237,12 @@ export default function App() {
                     );
                   })}
                   {(() => {
-                    const noProjectEntries = entries.filter(e => !e.projectId);
+                    const noProjectEntries = filteredReportEntries.filter(e => !e.projectId);
                     const noProjectTime = noProjectEntries.reduce((acc, e) => acc + e.duration, 0);
                     
                     if (noProjectTime === 0) return null;
                     
-                    const totalTime = entries.reduce((acc, e) => acc + e.duration, 0);
+                    const totalTime = filteredReportEntries.reduce((acc, e) => acc + e.duration, 0);
                     const percentage = totalTime > 0 ? (noProjectTime / totalTime) * 100 : 0;
                     const isExpanded = expandedReportProjects.includes('no-project');
 
@@ -1239,7 +1281,7 @@ export default function App() {
                       </div>
                     );
                   })()}
-                  {entries.length === 0 && (
+                  {filteredReportEntries.length === 0 && (
                     <div className="text-center text-gray-500 py-4 text-sm">
                       No data available yet.
                     </div>
