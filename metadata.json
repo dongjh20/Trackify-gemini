@@ -1,0 +1,5 @@
+{
+  "name": "Trackify",
+  "description": "A time tracking application with pause functionality and a compact mini-timer mode.",
+  "requestFramePermissions": []
+}
