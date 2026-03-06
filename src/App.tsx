@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
+import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
@@ -1037,6 +1037,13 @@ export default function App() {
         >
           <BarChart2 size={20} />
           <span className="text-[10px] font-medium mt-1">Reports</span>
+        </button>
+        <button 
+          onClick={() => signOut(auth)} 
+          className="flex flex-col items-center justify-center w-full h-full text-red-500 hover:bg-red-50 transition-colors"
+        >
+          <LogOut size={20} />
+          <span className="text-[10px] font-medium mt-1">Sign Out</span>
         </button>
       </nav>
     </div>
