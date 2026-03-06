@@ -26,6 +26,8 @@ export default function App() {
   const [isCompactMode, setIsCompactMode] = useState(false);
   const [expandedReportProjects, setExpandedReportProjects] = useState<string[]>([]);
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
+  const [isAddingProject, setIsAddingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
 
   useEffect(() => {
     const handleClickOutside = () => setOpenDropdownId(null);
@@ -384,18 +386,61 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <h1 className="text-2xl font-bold text-gray-800">Projects</h1>
                 <button 
-                  onClick={() => {
-                    const name = prompt('Enter new project name:');
-                    if (name) {
-                      const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#ec4899', '#06b6d4'];
-                      handleAddProject(name, colors[Math.floor(Math.random() * colors.length)]);
-                    }
-                  }}
+                  onClick={() => setIsAddingProject(true)}
                   className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
                 >
                   <Plus size={18} /> New Project
                 </button>
               </div>
+
+              {isAddingProject && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-xl p-6 w-full max-w-sm shadow-2xl">
+                    <h2 className="text-xl font-bold text-gray-800 mb-4">New Project</h2>
+                    <input
+                      type="text"
+                      autoFocus
+                      placeholder="Project name"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-6"
+                      value={newProjectName}
+                      onChange={e => setNewProjectName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && newProjectName.trim()) {
+                          const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#ec4899', '#06b6d4'];
+                          handleAddProject(newProjectName.trim(), colors[Math.floor(Math.random() * colors.length)]);
+                          setNewProjectName('');
+                          setIsAddingProject(false);
+                        }
+                      }}
+                    />
+                    <div className="flex justify-end gap-3">
+                      <button
+                        onClick={() => {
+                          setIsAddingProject(false);
+                          setNewProjectName('');
+                        }}
+                        className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (newProjectName.trim()) {
+                            const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#ec4899', '#06b6d4'];
+                            handleAddProject(newProjectName.trim(), colors[Math.floor(Math.random() * colors.length)]);
+                            setNewProjectName('');
+                            setIsAddingProject(false);
+                          }
+                        }}
+                        disabled={!newProjectName.trim()}
+                        className="px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Create
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
               
               <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
                 {projects.map((project, index) => (
