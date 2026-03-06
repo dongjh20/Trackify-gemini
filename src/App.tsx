@@ -554,7 +554,7 @@ export default function App() {
                                 <li key={`item-${index}`} className="flex items-center gap-1.5 cursor-pointer" onClick={() => setSelectedChartProject(selectedChartProject === entry.payload.id ? null : entry.payload.id)}>
                                   <span className="w-3 h-3 rounded-full" style={{ backgroundColor: entry.color }}></span>
                                   <span className={`text-gray-700 ${selectedChartProject === entry.payload.id ? 'font-bold' : ''}`}>{entry.value}</span>
-                                  <span className="text-gray-500 font-mono text-xs">({percentage}%)</span>
+                                  <span className="text-gray-500 font-mono text-xs ml-1">{formatDuration(entry.payload.value)} ({percentage}%)</span>
                                 </li>
                               );
                             })}
@@ -648,26 +648,60 @@ export default function App() {
                             return null;
                           };
 
+                          const renderDrillDownLegend = (props: any) => {
+                            const { payload } = props;
+                            return (
+                              <ul className="flex flex-wrap justify-center gap-x-3 gap-y-1 text-xs mt-2 overflow-y-auto max-h-20">
+                                {payload.map((entry: any, index: number) => {
+                                  const percentage = projectTotalDuration > 0 ? ((entry.payload.value / projectTotalDuration) * 100).toFixed(1) : 0;
+                                  return (
+                                    <li key={`item-${index}`} className="flex items-center gap-1 cursor-pointer">
+                                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }}></span>
+                                      <span className="text-gray-700 truncate max-w-[100px]" title={entry.value}>{entry.value}</span>
+                                      <span className="text-gray-500 font-mono text-[10px] ml-0.5">{formatDuration(entry.payload.value)} ({percentage}%)</span>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            );
+                          };
+
+                          const RADIAN = Math.PI / 180;
+                          const renderDrillDownLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
+                            const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+                            const x = cx + radius * Math.cos(-midAngle * RADIAN);
+                            const y = cy + radius * Math.sin(-midAngle * RADIAN);
+
+                            return percent > 0.05 ? (
+                              <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" className="text-[10px] font-medium pointer-events-none">
+                                {`${(percent * 100).toFixed(0)}%`}
+                              </text>
+                            ) : null;
+                          };
+
                           return (
                             <>
-                              <div className="h-40 flex-shrink-0 mb-2">
+                              <div className="h-56 flex-shrink-0 mb-2">
                                 <ResponsiveContainer width="100%" height="100%">
                                   <PieChart>
                                     <Pie
                                       data={drillDownData}
                                       cx="50%"
-                                      cy="50%"
+                                      cy="45%"
                                       innerRadius={30}
                                       outerRadius={60}
                                       paddingAngle={2}
                                       dataKey="value"
                                       className="outline-none"
+                                      labelLine={false}
+                                      label={renderDrillDownLabel}
                                     >
                                       {drillDownData.map((entry, index) => (
                                         <Cell key={`cell-${index}`} fill={entry.color} />
                                       ))}
                                     </Pie>
                                     <RechartsTooltip content={<DrillDownTooltip />} />
+                                    <Legend content={renderDrillDownLegend} verticalAlign="bottom" />
                                   </PieChart>
                                 </ResponsiveContainer>
                               </div>
