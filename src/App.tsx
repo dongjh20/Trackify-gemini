@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
+import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { Project, TimeEntry, ActiveTimer } from './types';
 import { formatDuration, formatTime, formatDateStr, groupByDay } from './utils';
 import { ProjectSelector } from './components/ProjectSelector';
@@ -28,6 +29,7 @@ export default function App() {
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
+  const [selectedChartProject, setSelectedChartProject] = useState<string | null>(null);
 
   useEffect(() => {
     const handleClickOutside = () => setOpenDropdownId(null);
@@ -507,6 +509,249 @@ export default function App() {
                   <span className="text-3xl font-bold text-gray-800">
                     {new Set(entries.map(e => e.projectId).filter(Boolean)).size}
                   </span>
+                </div>
+              </div>
+
+              {/* Chart Section */}
+              <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden mt-4">
+                <div className="p-4 border-b border-gray-200 bg-gray-50">
+                  <h2 className="font-semibold text-gray-800">Time Distribution</h2>
+                </div>
+                <div className="p-4 flex flex-col md:flex-row gap-6">
+                  <div className="w-full md:w-1/2 h-80">
+                    {(() => {
+                      const totalDuration = entries.reduce((acc, e) => acc + e.duration, 0);
+                      const chartData = projects.map(p => {
+                        const duration = entries.filter(e => e.projectId === p.id).reduce((acc, e) => acc + e.duration, 0);
+                        return { name: p.name, value: duration, color: p.color, id: p.id };
+                      }).filter(d => d.value > 0);
+
+                      const noProjectDuration = entries.filter(e => !e.projectId).reduce((acc, e) => acc + e.duration, 0);
+                      if (noProjectDuration > 0) {
+                        chartData.push({ name: 'No Project', value: noProjectDuration, color: '#9ca3af', id: 'no-project' });
+                      }
+
+                      const CustomTooltip = ({ active, payload }: any) => {
+                        if (active && payload && payload.length) {
+                          const percent = totalDuration > 0 ? ((payload[0].value / totalDuration) * 100).toFixed(1) : 0;
+                          return (
+                            <div className="bg-white p-2 border border-gray-200 shadow-sm rounded text-sm">
+                              <p className="font-medium text-gray-800">{payload[0].name}</p>
+                              <p className="text-gray-600 font-mono">{formatDuration(payload[0].value)} ({percent}%)</p>
+                            </div>
+                          );
+                        }
+                        return null;
+                      };
+
+                      const renderLegend = (props: any) => {
+                        const { payload } = props;
+                        return (
+                          <ul className="flex flex-wrap justify-center gap-x-4 gap-y-2 text-sm mt-4">
+                            {payload.map((entry: any, index: number) => {
+                              const percentage = totalDuration > 0 ? ((entry.payload.value / totalDuration) * 100).toFixed(1) : 0;
+                              return (
+                                <li key={`item-${index}`} className="flex items-center gap-1.5 cursor-pointer" onClick={() => setSelectedChartProject(selectedChartProject === entry.payload.id ? null : entry.payload.id)}>
+                                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: entry.color }}></span>
+                                  <span className={`text-gray-700 ${selectedChartProject === entry.payload.id ? 'font-bold' : ''}`}>{entry.value}</span>
+                                  <span className="text-gray-500 font-mono text-xs">({percentage}%)</span>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        );
+                      };
+
+                      const RADIAN = Math.PI / 180;
+                      const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
+                        const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+                        const x = cx + radius * Math.cos(-midAngle * RADIAN);
+                        const y = cy + radius * Math.sin(-midAngle * RADIAN);
+
+                        return percent > 0.05 ? (
+                          <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" className="text-xs font-medium pointer-events-none">
+                            {`${(percent * 100).toFixed(0)}%`}
+                          </text>
+                        ) : null;
+                      };
+
+                      return chartData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={chartData}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={60}
+                              outerRadius={100}
+                              paddingAngle={2}
+                              dataKey="value"
+                              onClick={(data) => setSelectedChartProject(selectedChartProject === data.id ? null : data.id)}
+                              className="cursor-pointer outline-none"
+                              labelLine={false}
+                              label={renderCustomizedLabel}
+                            >
+                              {chartData.map((entry, index) => (
+                                <Cell key={`cell-${index}`} fill={entry.color} stroke={selectedChartProject === entry.id ? '#000' : 'none'} strokeWidth={selectedChartProject === entry.id ? 2 : 0} />
+                              ))}
+                            </Pie>
+                            <RechartsTooltip content={<CustomTooltip />} />
+                            <Legend content={renderLegend} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-gray-400 text-sm">No data to display</div>
+                      );
+                    })()}
+                  </div>
+                  
+                  <div className="w-full md:w-1/2 flex flex-col h-80">
+                    <h3 className="font-medium text-gray-700 mb-3 border-b border-gray-100 pb-2 flex-shrink-0">
+                      {selectedChartProject ? (
+                        selectedChartProject === 'no-project' ? 'No Project Details' : projects.find(p => p.id === selectedChartProject)?.name + ' Details'
+                      ) : (
+                        'Click a slice to view details'
+                      )}
+                    </h3>
+                    
+                    {selectedChartProject ? (
+                      <div className="flex flex-col h-full overflow-hidden">
+                        {(() => {
+                          const projectEntries = selectedChartProject === 'no-project' 
+                            ? entries.filter(e => !e.projectId) 
+                            : entries.filter(e => e.projectId === selectedChartProject);
+                          
+                          const projectTotalDuration = projectEntries.reduce((acc, e) => acc + e.duration, 0);
+                          
+                          const entriesByDesc = projectEntries.reduce((acc, e) => {
+                            const desc = e.description || 'No description';
+                            if (!acc[desc]) acc[desc] = 0;
+                            acc[desc] += e.duration;
+                            return acc;
+                          }, {} as Record<string, number>);
+
+                          const drillDownData = Object.entries(entriesByDesc).map(([name, value], index) => {
+                            const colors = ['#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#f87171', '#f472b6', '#2dd4bf', '#94a3b8'];
+                            return { name, value: Number(value), color: colors[index % colors.length] };
+                          }).sort((a, b) => b.value - a.value);
+
+                          const DrillDownTooltip = ({ active, payload }: any) => {
+                            if (active && payload && payload.length) {
+                              const percent = projectTotalDuration > 0 ? ((payload[0].value / projectTotalDuration) * 100).toFixed(1) : 0;
+                              return (
+                                <div className="bg-white p-2 border border-gray-200 shadow-sm rounded text-sm z-50">
+                                  <p className="font-medium text-gray-800">{payload[0].name}</p>
+                                  <p className="text-gray-600 font-mono">{formatDuration(payload[0].value)} ({percent}%)</p>
+                                </div>
+                              );
+                            }
+                            return null;
+                          };
+
+                          return (
+                            <>
+                              <div className="h-40 flex-shrink-0 mb-2">
+                                <ResponsiveContainer width="100%" height="100%">
+                                  <PieChart>
+                                    <Pie
+                                      data={drillDownData}
+                                      cx="50%"
+                                      cy="50%"
+                                      innerRadius={30}
+                                      outerRadius={60}
+                                      paddingAngle={2}
+                                      dataKey="value"
+                                      className="outline-none"
+                                    >
+                                      {drillDownData.map((entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={entry.color} />
+                                      ))}
+                                    </Pie>
+                                    <RechartsTooltip content={<DrillDownTooltip />} />
+                                  </PieChart>
+                                </ResponsiveContainer>
+                              </div>
+                              <div className="overflow-y-auto flex-1 pr-2">
+                                <div className="flex flex-col gap-2">
+                                  {projectEntries.sort((a, b) => b.startTime - a.startTime).map(entry => (
+                                    <div key={entry.id} className="flex items-center justify-between text-sm p-2 bg-gray-50 rounded border border-gray-100">
+                                      <div className="flex flex-col">
+                                        <span className="text-gray-800 font-medium">{entry.description || <span className="text-gray-400 italic">No description</span>}</span>
+                                        <span className="text-xs text-gray-500">{new Date(entry.startTime).toLocaleDateString()} {formatTime(entry.startTime)}</span>
+                                      </div>
+                                      <span className="font-mono text-gray-600">{formatDuration(entry.duration)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-500 flex items-center justify-center h-full">
+                        Select a project from the chart to see its detailed breakdown.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Bar Chart Section */}
+              <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden mt-4">
+                <div className="p-4 border-b border-gray-200 bg-gray-50">
+                  <h2 className="font-semibold text-gray-800">Last 7 Days</h2>
+                </div>
+                <div className="p-4 h-72">
+                  {(() => {
+                    const last7Days = Array.from({ length: 7 }).map((_, i) => {
+                      const d = new Date();
+                      d.setDate(d.getDate() - 6 + i);
+                      return d;
+                    });
+
+                    const barChartData = last7Days.map(date => {
+                      const dayEntries = entries.filter(e => {
+                        const d = new Date(e.startTime);
+                        return d.getFullYear() === date.getFullYear() && 
+                               d.getMonth() === date.getMonth() && 
+                               d.getDate() === date.getDate();
+                      });
+                      const duration = dayEntries.reduce((acc, e) => acc + e.duration, 0);
+                      return {
+                        name: date.toLocaleDateString('en-US', { weekday: 'short' }),
+                        fullDate: date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
+                        durationMs: duration,
+                        durationHours: Number((duration / (1000 * 60 * 60)).toFixed(2))
+                      };
+                    });
+
+                    const CustomBarTooltip = ({ active, payload }: any) => {
+                      if (active && payload && payload.length) {
+                        return (
+                          <div className="bg-white p-2 border border-gray-200 shadow-sm rounded text-sm">
+                            <p className="font-medium text-gray-800">{payload[0].payload.fullDate}</p>
+                            <p className="text-gray-600 font-mono">{formatDuration(payload[0].payload.durationMs)}</p>
+                          </div>
+                        );
+                      }
+                      return null;
+                    };
+
+                    return entries.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={barChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} dy={10} />
+                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} />
+                          <RechartsTooltip content={<CustomBarTooltip />} cursor={{ fill: '#f3f4f6' }} />
+                          <Bar dataKey="durationHours" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={50} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-gray-400 text-sm">No data to display</div>
+                    );
+                  })()}
                 </div>
               </div>
 
