@@ -54,7 +54,7 @@ export default function App() {
       const projs: Project[] = [];
       snapshot.forEach(doc => projs.push({ id: doc.id, ...doc.data() } as Project));
       setProjects(projs);
-    });
+    }, (error) => console.error("Projects error:", error));
 
     const qEntries = query(collection(db, 'entries'), where('userId', '==', user.uid));
     const unsubscribeEntries = onSnapshot(qEntries, (snapshot) => {
@@ -63,14 +63,23 @@ export default function App() {
       // Sort entries by startTime descending
       ents.sort((a, b) => b.startTime - a.startTime);
       setEntries(ents);
-    });
+    }, (error) => console.error("Entries error:", error));
 
-    const unsubscribeTimer = onSnapshot(doc(db, 'activeTimers', user.uid), (docSnap) => {
-      if (docSnap.exists() && docSnap.data().isActive) {
-        setActiveTimer(docSnap.data() as ActiveTimer);
+    const qTimer = query(collection(db, 'activeTimers'), where('userId', '==', user.uid));
+    const unsubscribeTimer = onSnapshot(qTimer, (snapshot) => {
+      if (!snapshot.empty) {
+        const timerData = snapshot.docs[0].data();
+        if (timerData.isActive) {
+          setActiveTimer(timerData as ActiveTimer);
+        } else {
+          setActiveTimer(null);
+        }
       } else {
         setActiveTimer(null);
       }
+      setIsLoading(false);
+    }, (error) => {
+      console.error("Timer error:", error);
       setIsLoading(false);
     });
 
@@ -160,25 +169,30 @@ export default function App() {
 
   const handleStop = async () => {
     if (activeTimer && user) {
-      const endTime = Date.now();
-      let finalDuration = endTime - activeTimer.startTime - activeTimer.totalPausedTime;
-      if (activeTimer.isPaused && activeTimer.lastPauseTime) {
-        finalDuration -= (endTime - activeTimer.lastPauseTime);
+      try {
+        const endTime = Date.now();
+        let finalDuration = endTime - activeTimer.startTime - activeTimer.totalPausedTime;
+        if (activeTimer.isPaused && activeTimer.lastPauseTime) {
+          finalDuration -= (endTime - activeTimer.lastPauseTime);
+        }
+        
+        const newEntryRef = doc(collection(db, 'entries'));
+        const newEntry: TimeEntry = {
+          id: newEntryRef.id,
+          description: activeTimer.description,
+          projectId: activeTimer.projectId,
+          startTime: activeTimer.startTime,
+          endTime: activeTimer.isPaused && activeTimer.lastPauseTime ? activeTimer.lastPauseTime : endTime,
+          duration: finalDuration,
+        };
+        
+        await setDoc(newEntryRef, { ...newEntry, userId: user.uid });
+        await deleteDoc(doc(db, 'activeTimers', user.uid));
+        setDraftProjectId(activeTimer.projectId); // Remember the project for the next entry
+      } catch (error) {
+        console.error("Error stopping timer:", error);
+        alert("Failed to stop timer. Please try again.");
       }
-      
-      const newEntryRef = doc(collection(db, 'entries'));
-      const newEntry: TimeEntry = {
-        id: newEntryRef.id,
-        description: activeTimer.description,
-        projectId: activeTimer.projectId,
-        startTime: activeTimer.startTime,
-        endTime: activeTimer.isPaused && activeTimer.lastPauseTime ? activeTimer.lastPauseTime : endTime,
-        duration: finalDuration,
-      };
-      
-      await setDoc(newEntryRef, { ...newEntry, userId: user.uid });
-      await setDoc(doc(db, 'activeTimers', user.uid), { isActive: false });
-      setDraftProjectId(activeTimer.projectId); // Remember the project for the next entry
     }
   };
 
