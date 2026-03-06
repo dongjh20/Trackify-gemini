@@ -20,4 +20,6 @@ export type ActiveTimer = {
   totalPausedTime: number;
   lastPauseTime: number | null;
   isPaused: boolean;
+  isActive: boolean;
+  userId: string;
 };

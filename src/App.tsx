@@ -68,9 +68,9 @@ export default function App() {
     const qTimer = query(collection(db, 'activeTimers'), where('userId', '==', user.uid));
     const unsubscribeTimer = onSnapshot(qTimer, (snapshot) => {
       if (!snapshot.empty) {
-        const timerData = snapshot.docs[0].data();
+        const timerData = snapshot.docs[0].data() as ActiveTimer;
         if (timerData.isActive) {
-          setActiveTimer(timerData as ActiveTimer);
+          setActiveTimer(timerData);
         } else {
           setActiveTimer(null);
         }
