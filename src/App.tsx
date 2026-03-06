@@ -122,6 +122,7 @@ export default function App() {
       };
       
       setEntries([newEntry, ...entries]);
+      setDraftProjectId(activeTimer.projectId); // Remember the project for the next entry
       setActiveTimer(null);
     }
   };
