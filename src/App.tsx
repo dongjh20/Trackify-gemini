@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
+import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where } from 'firebase/firestore';
+import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { db, auth, googleProvider } from './firebase';
 import { Project, TimeEntry, ActiveTimer } from './types';
 import { formatDuration, formatTime, formatDateStr, groupByDay } from './utils';
 import { ProjectSelector } from './components/ProjectSelector';
@@ -10,15 +13,11 @@ type View = 'tracker' | 'projects' | 'reports';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<View>('tracker');
-  const [projects, setProjects] = useState<Project[]>([
-    { id: '1', name: 'Design', color: '#3b82f6' },
-    { id: '2', name: 'Development', color: '#10b981' },
-    { id: '3', name: 'Meeting', color: '#f59e0b' },
-    { id: '4', name: 'Admin', color: '#8b5cf6' },
-  ]);
-  
+  const [projects, setProjects] = useState<Project[]>([]);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
   
   // Draft state for when timer is NOT running
   const [draftDescription, setDraftDescription] = useState('');
@@ -37,19 +36,66 @@ export default function App() {
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
+  // Firebase Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (!currentUser) setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Firebase Realtime Listeners
+  useEffect(() => {
+    if (!user) return;
+
+    const qProjects = query(collection(db, 'projects'), where('userId', '==', user.uid));
+    const unsubscribeProjects = onSnapshot(qProjects, (snapshot) => {
+      const projs: Project[] = [];
+      snapshot.forEach(doc => projs.push({ id: doc.id, ...doc.data() } as Project));
+      setProjects(projs);
+    });
+
+    const qEntries = query(collection(db, 'entries'), where('userId', '==', user.uid));
+    const unsubscribeEntries = onSnapshot(qEntries, (snapshot) => {
+      const ents: TimeEntry[] = [];
+      snapshot.forEach(doc => ents.push({ id: doc.id, ...doc.data() } as TimeEntry));
+      // Sort entries by startTime descending
+      ents.sort((a, b) => b.startTime - a.startTime);
+      setEntries(ents);
+    });
+
+    const unsubscribeTimer = onSnapshot(doc(db, 'activeTimers', user.uid), (docSnap) => {
+      if (docSnap.exists() && docSnap.data().isActive) {
+        setActiveTimer(docSnap.data() as ActiveTimer);
+      } else {
+        setActiveTimer(null);
+      }
+      setIsLoading(false);
+    });
+
+    return () => {
+      unsubscribeProjects();
+      unsubscribeEntries();
+      unsubscribeTimer();
+    };
+  }, [user]);
+
   const toggleReportProject = (id: string) => {
     setExpandedReportProjects(prev =>
       prev.includes(id) ? prev.filter(pId => pId !== id) : [...prev, id]
     );
   };
 
-  const handleAddProject = (name: string, color: string) => {
+  const handleAddProject = async (name: string, color: string) => {
+    if (!user) return;
+    const newProjectRef = doc(collection(db, 'projects'));
     const newProject: Project = {
-      id: crypto.randomUUID(),
+      id: newProjectRef.id,
       name,
       color
     };
-    setProjects([...projects, newProject]);
+    await setDoc(newProjectRef, { ...newProject, userId: user.uid });
     
     // Automatically select the new project if we are in the tracker
     if (activeTimer) {
@@ -59,46 +105,52 @@ export default function App() {
     }
   };
 
-  const handleDeleteProject = (id: string) => {
-    setProjects(projects.filter(p => p.id !== id));
-    setEntries(entries.map(e => e.projectId === id ? { ...e, projectId: null } : e));
+  const handleDeleteProject = async (id: string) => {
+    await deleteDoc(doc(db, 'projects', id));
+    // Update all entries that used this project to have no project
+    entries.forEach(async (e) => {
+      if (e.projectId === id) {
+        await updateDoc(doc(db, 'entries', e.id), { projectId: null });
+      }
+    });
     if (draftProjectId === id) setDraftProjectId(null);
     if (activeTimer?.projectId === id) updateActiveTimer({ projectId: null });
   };
 
-  const handleDeleteEntry = (id: string) => {
-    setEntries(entries.filter(e => e.id !== id));
+  const handleDeleteEntry = async (id: string) => {
+    await deleteDoc(doc(db, 'entries', id));
   };
 
-  const handleStart = () => {
-    if (activeTimer) return;
-    setActiveTimer({
+  const handleStart = async () => {
+    if (activeTimer || !user) return;
+    const newTimer = {
       description: draftDescription,
       projectId: draftProjectId,
       startTime: Date.now(),
       totalPausedTime: 0,
       lastPauseTime: null,
       isPaused: false,
-    });
+      isActive: true,
+      userId: user.uid
+    };
+    await setDoc(doc(db, 'activeTimers', user.uid), newTimer);
     setDraftDescription('');
     setDraftProjectId(null);
   };
 
-  const handlePause = () => {
-    if (activeTimer && !activeTimer.isPaused) {
-      setActiveTimer({
-        ...activeTimer,
+  const handlePause = async () => {
+    if (activeTimer && !activeTimer.isPaused && user) {
+      await updateDoc(doc(db, 'activeTimers', user.uid), {
         isPaused: true,
         lastPauseTime: Date.now(),
       });
     }
   };
 
-  const handleResume = () => {
-    if (activeTimer && activeTimer.isPaused && activeTimer.lastPauseTime) {
+  const handleResume = async () => {
+    if (activeTimer && activeTimer.isPaused && activeTimer.lastPauseTime && user) {
       const pausedDuration = Date.now() - activeTimer.lastPauseTime;
-      setActiveTimer({
-        ...activeTimer,
+      await updateDoc(doc(db, 'activeTimers', user.uid), {
         isPaused: false,
         totalPausedTime: activeTimer.totalPausedTime + pausedDuration,
         lastPauseTime: null,
@@ -106,16 +158,17 @@ export default function App() {
     }
   };
 
-  const handleStop = () => {
-    if (activeTimer) {
+  const handleStop = async () => {
+    if (activeTimer && user) {
       const endTime = Date.now();
       let finalDuration = endTime - activeTimer.startTime - activeTimer.totalPausedTime;
       if (activeTimer.isPaused && activeTimer.lastPauseTime) {
         finalDuration -= (endTime - activeTimer.lastPauseTime);
       }
       
+      const newEntryRef = doc(collection(db, 'entries'));
       const newEntry: TimeEntry = {
-        id: crypto.randomUUID(),
+        id: newEntryRef.id,
         description: activeTimer.description,
         projectId: activeTimer.projectId,
         startTime: activeTimer.startTime,
@@ -123,19 +176,53 @@ export default function App() {
         duration: finalDuration,
       };
       
-      setEntries([newEntry, ...entries]);
+      await setDoc(newEntryRef, { ...newEntry, userId: user.uid });
+      await setDoc(doc(db, 'activeTimers', user.uid), { isActive: false });
       setDraftProjectId(activeTimer.projectId); // Remember the project for the next entry
-      setActiveTimer(null);
     }
   };
 
-  const updateActiveTimer = (updates: Partial<ActiveTimer>) => {
-    if (activeTimer) {
-      setActiveTimer({ ...activeTimer, ...updates });
+  const updateActiveTimer = async (updates: Partial<ActiveTimer>) => {
+    if (activeTimer && user) {
+      await updateDoc(doc(db, 'activeTimers', user.uid), updates);
     }
   };
 
   const groupedEntries = groupByDay(entries);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-xl text-center max-w-sm w-full border border-gray-100">
+          <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mx-auto mb-6">
+            <Clock className="w-8 h-8 text-blue-500" />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-800 mb-2">Trackify</h1>
+          <p className="text-gray-500 mb-8">Sign in to sync your time across all your devices securely.</p>
+          <button
+            onClick={() => signInWithPopup(auth, googleProvider)}
+            className="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2.5 px-4 rounded-xl transition-colors flex items-center justify-center gap-3 shadow-sm"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+            </svg>
+            Continue with Google
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (isCompactMode) {
     return (
@@ -232,9 +319,13 @@ export default function App() {
             <BarChart2 size={18} /> Reports
           </button>
         </nav>
-        <div className="p-4 border-t border-gray-200">
-          <button className="flex items-center gap-3 px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors w-full text-left">
-            <Settings size={18} /> Settings
+        <div className="p-4 border-t border-gray-200 flex flex-col gap-2">
+          <div className="flex items-center gap-3 px-3 py-2 text-sm text-gray-500 font-medium">
+            <img src={user?.photoURL || ''} alt="" className="w-6 h-6 rounded-full bg-gray-200" />
+            <span className="truncate">{user?.displayName || 'User'}</span>
+          </div>
+          <button onClick={() => signOut(auth)} className="flex items-center gap-3 px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg font-medium transition-colors w-full text-left">
+            Sign Out
           </button>
         </div>
       </aside>
