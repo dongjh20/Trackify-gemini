@@ -630,12 +630,12 @@ export default function App() {
                       ) : (
                         <div className="flex items-center gap-2">
                           {activeTimer.isPaused ? (
-                            <button onClick={handleResume} className="w-10 md:w-12 h-10 rounded bg-blue-100 hover:bg-blue-200 text-blue-600 flex items-center justify-center transition-colors cursor-pointer">
-                              <Play size={18} className="ml-1" />
+                            <button onClick={handleResume} className="w-20 md:w-24 h-10 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 font-medium flex items-center justify-center transition-colors cursor-pointer">
+                              RESUME
                             </button>
                           ) : (
-                            <button onClick={handlePause} className="w-10 md:w-12 h-10 rounded bg-amber-100 hover:bg-amber-200 text-amber-600 flex items-center justify-center transition-colors cursor-pointer">
-                              <Pause size={18} />
+                            <button onClick={handlePause} className="w-20 md:w-24 h-10 rounded bg-amber-100 hover:bg-amber-200 text-amber-700 font-medium flex items-center justify-center transition-colors cursor-pointer">
+                              PAUSE
                             </button>
                           )}
                           <button onClick={handleStop} className="w-20 md:w-24 h-10 rounded bg-red-500 hover:bg-red-600 text-white font-medium flex items-center justify-center transition-colors cursor-pointer">
