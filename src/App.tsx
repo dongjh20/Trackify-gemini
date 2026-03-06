@@ -296,7 +296,7 @@ export default function App() {
             </header>
 
             {/* Entries List */}
-            <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
+            <div className="flex-1 overflow-y-auto p-6 pb-32 bg-gray-50">
               <div className="max-w-5xl mx-auto flex flex-col gap-6">
                 {Object.keys(groupedEntries).length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-20 text-gray-400">
@@ -315,11 +315,11 @@ export default function App() {
                           <span>Total: {formatDuration(dayTotal)}</span>
                         </div>
                         
-                        <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+                        <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
                           {dayEntries.map((entry, index) => {
                             const project = projects.find(p => p.id === entry.projectId);
                             return (
-                              <div key={entry.id} className={`flex items-center justify-between p-4 hover:bg-gray-50 transition-colors ${index !== dayEntries.length - 1 ? 'border-b border-gray-100' : ''}`}>
+                              <div key={entry.id} className={`flex items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== dayEntries.length - 1 ? 'border-b border-gray-100' : ''}`}>
                                 <div className="flex items-center gap-4 flex-1">
                                   <span className={`text-gray-800 font-medium ${!entry.description ? 'text-gray-400 italic' : ''}`}>
                                     {entry.description || '(no description)'}
@@ -339,7 +339,7 @@ export default function App() {
                                   <div className="text-lg font-mono font-medium text-gray-800 w-24 text-right">
                                     {formatDuration(entry.duration)}
                                   </div>
-                                  <div className="relative">
+                                  <div className={`relative ${openDropdownId === entry.id ? 'z-10' : ''}`}>
                                     <button 
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -379,7 +379,7 @@ export default function App() {
         )}
 
         {currentView === 'projects' && (
-          <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
+          <div className="flex-1 overflow-y-auto p-6 pb-32 bg-gray-50">
             <div className="max-w-5xl mx-auto flex flex-col gap-6">
               <div className="flex items-center justify-between">
                 <h1 className="text-2xl font-bold text-gray-800">Projects</h1>
@@ -397,14 +397,14 @@ export default function App() {
                 </button>
               </div>
               
-              <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+              <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
                 {projects.map((project, index) => (
-                  <div key={project.id} className={`flex items-center justify-between p-4 hover:bg-gray-50 transition-colors ${index !== projects.length - 1 ? 'border-b border-gray-100' : ''}`}>
+                  <div key={project.id} className={`flex items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== projects.length - 1 ? 'border-b border-gray-100' : ''}`}>
                     <div className="flex items-center gap-3">
                       <span className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color }}></span>
                       <span className="font-medium text-gray-800">{project.name}</span>
                     </div>
-                    <div className="relative">
+                    <div className={`relative ${openDropdownId === project.id ? 'z-10' : ''}`}>
                       <button 
                         onClick={(e) => {
                           e.stopPropagation();
