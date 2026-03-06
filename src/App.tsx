@@ -138,8 +138,8 @@ export default function App() {
   if (isCompactMode) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-        <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden border border-gray-200">
-          <div className="bg-gray-50 px-4 py-2 flex justify-between items-center border-b border-gray-200 cursor-move">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm border border-gray-200">
+          <div className="bg-gray-50 px-4 py-2 flex justify-between items-center border-b border-gray-200 cursor-move rounded-t-xl">
             <div className="flex items-center gap-2">
               <Clock size={14} className="text-blue-500" />
               <span className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Mini Tracker</span>
