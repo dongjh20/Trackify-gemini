@@ -201,9 +201,9 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex bg-gray-50 text-gray-800 font-sans">
-      {/* Sidebar */}
-      <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
+    <div className="h-screen flex flex-col md:flex-row bg-gray-50 text-gray-800 font-sans overflow-hidden">
+      {/* Sidebar (Desktop) */}
+      <aside className="hidden md:flex w-56 bg-white border-r border-gray-200 flex-col flex-shrink-0">
         <div className="h-14 flex items-center px-4 border-b border-gray-200">
           <div className="flex items-center gap-2 text-blue-600 font-bold text-lg tracking-tight">
             <Clock size={24} />
@@ -238,21 +238,21 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col h-screen overflow-hidden">
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative">
         {currentView === 'tracker' && (
           <>
             {/* Topbar / Timer Bar */}
-            <header className="bg-white border-b border-gray-200 shadow-sm z-10">
-              <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
+            <header className="bg-white border-b border-gray-200 shadow-sm z-10 flex-shrink-0">
+              <div className="max-w-5xl mx-auto px-4 py-3 md:h-16 flex flex-col md:flex-row items-center justify-between gap-3 md:gap-4">
                 <input 
                   type="text"
                   placeholder="What are you working on?"
-                  className="flex-1 text-base border-none focus:ring-0 p-0 placeholder-gray-400 bg-transparent outline-none"
+                  className="w-full md:flex-1 text-base border-none focus:ring-0 p-0 placeholder-gray-400 bg-transparent outline-none"
                   value={activeTimer ? activeTimer.description : draftDescription}
                   onChange={(e) => activeTimer ? updateActiveTimer({ description: e.target.value }) : setDraftDescription(e.target.value)}
                 />
                 
-                <div className="flex items-center gap-6">
+                <div className="flex items-center justify-between w-full md:w-auto gap-2 md:gap-6">
                   <ProjectSelector 
                     projects={projects}
                     selectedProjectId={activeTimer ? activeTimer.projectId : draftProjectId}
@@ -260,40 +260,42 @@ export default function App() {
                     onAddProject={handleAddProject}
                   />
                   
-                  <div className="h-6 w-px bg-gray-200"></div>
+                  <div className="hidden md:block h-6 w-px bg-gray-200"></div>
                   
-                  <TimerDisplay activeTimer={activeTimer} className={`text-xl w-24 text-right ${activeTimer?.isPaused ? 'text-gray-400' : 'text-gray-800'}`} />
-                  
-                  <div className="flex items-center gap-2">
-                    {!activeTimer ? (
-                      <button onClick={handleStart} className="w-24 h-10 rounded bg-blue-500 hover:bg-blue-600 text-white font-medium flex items-center justify-center transition-colors cursor-pointer">
-                        START
-                      </button>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        {activeTimer.isPaused ? (
-                          <button onClick={handleResume} className="w-12 h-10 rounded bg-blue-100 hover:bg-blue-200 text-blue-600 flex items-center justify-center transition-colors cursor-pointer">
-                            <Play size={18} className="ml-1" />
-                          </button>
-                        ) : (
-                          <button onClick={handlePause} className="w-12 h-10 rounded bg-amber-100 hover:bg-amber-200 text-amber-600 flex items-center justify-center transition-colors cursor-pointer">
-                            <Pause size={18} />
-                          </button>
-                        )}
-                        <button onClick={handleStop} className="w-24 h-10 rounded bg-red-500 hover:bg-red-600 text-white font-medium flex items-center justify-center transition-colors cursor-pointer">
-                          STOP
+                  <div className="flex items-center gap-4 md:gap-6">
+                    <TimerDisplay activeTimer={activeTimer} className={`text-xl font-mono md:w-24 text-right ${activeTimer?.isPaused ? 'text-gray-400' : 'text-gray-800'}`} />
+                    
+                    <div className="flex items-center gap-2">
+                      {!activeTimer ? (
+                        <button onClick={handleStart} className="w-20 md:w-24 h-10 rounded bg-blue-500 hover:bg-blue-600 text-white font-medium flex items-center justify-center transition-colors cursor-pointer">
+                          START
                         </button>
-                      </div>
-                    )}
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          {activeTimer.isPaused ? (
+                            <button onClick={handleResume} className="w-10 md:w-12 h-10 rounded bg-blue-100 hover:bg-blue-200 text-blue-600 flex items-center justify-center transition-colors cursor-pointer">
+                              <Play size={18} className="ml-1" />
+                            </button>
+                          ) : (
+                            <button onClick={handlePause} className="w-10 md:w-12 h-10 rounded bg-amber-100 hover:bg-amber-200 text-amber-600 flex items-center justify-center transition-colors cursor-pointer">
+                              <Pause size={18} />
+                            </button>
+                          )}
+                          <button onClick={handleStop} className="w-20 md:w-24 h-10 rounded bg-red-500 hover:bg-red-600 text-white font-medium flex items-center justify-center transition-colors cursor-pointer">
+                            STOP
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <button 
+                      onClick={() => setIsCompactMode(true)}
+                      className="hidden md:block p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors cursor-pointer"
+                      title="Mini Tracker"
+                    >
+                      <Minimize2 size={18} />
+                    </button>
                   </div>
-                  
-                  <button 
-                    onClick={() => setIsCompactMode(true)}
-                    className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors cursor-pointer"
-                    title="Mini Tracker"
-                  >
-                    <Minimize2 size={18} />
-                  </button>
                 </div>
               </div>
             </header>
@@ -322,50 +324,52 @@ export default function App() {
                           {dayEntries.map((entry, index) => {
                             const project = projects.find(p => p.id === entry.projectId);
                             return (
-                              <div key={entry.id} className={`flex items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== dayEntries.length - 1 ? 'border-b border-gray-100' : ''}`}>
-                                <div className="flex items-center gap-4 flex-1">
+                              <div key={entry.id} className={`flex flex-col md:flex-row md:items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== dayEntries.length - 1 ? 'border-b border-gray-100' : ''}`}>
+                                <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4 flex-1 mb-3 md:mb-0">
                                   <span className={`text-gray-800 font-medium ${!entry.description ? 'text-gray-400 italic' : ''}`}>
                                     {entry.description || '(no description)'}
                                   </span>
                                   {project && (
-                                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50">
+                                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 self-start md:self-auto">
                                       <span className="w-2 h-2 rounded-full" style={{ backgroundColor: project.color }}></span>
                                       <span className="text-xs text-gray-600 font-medium">{project.name}</span>
                                     </div>
                                   )}
                                 </div>
                                 
-                                <div className="flex items-center gap-6">
-                                  <div className="text-sm text-gray-500 font-medium w-32 text-right">
+                                <div className="flex items-center justify-between md:justify-end gap-4 md:gap-6 w-full md:w-auto">
+                                  <div className="text-sm text-gray-500 font-medium md:w-32 md:text-right">
                                     {formatTime(entry.startTime)} - {formatTime(entry.endTime)}
                                   </div>
-                                  <div className="text-lg font-mono font-medium text-gray-800 w-24 text-right">
-                                    {formatDuration(entry.duration)}
-                                  </div>
-                                  <div className={`relative ${openDropdownId === entry.id ? 'z-10' : ''}`}>
-                                    <button 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setOpenDropdownId(openDropdownId === entry.id ? null : entry.id);
-                                      }}
-                                      className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-200 transition-colors cursor-pointer"
-                                    >
-                                      <MoreVertical size={16} />
-                                    </button>
-                                    {openDropdownId === entry.id && (
-                                      <div className="absolute right-0 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
-                                        <button 
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleDeleteEntry(entry.id);
-                                            setOpenDropdownId(null);
-                                          }}
-                                          className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
-                                        >
-                                          <Trash2 size={14} /> Delete
-                                        </button>
-                                      </div>
-                                    )}
+                                  <div className="flex items-center gap-4">
+                                    <div className="text-lg font-mono font-medium text-gray-800 md:w-24 text-right">
+                                      {formatDuration(entry.duration)}
+                                    </div>
+                                    <div className={`relative ${openDropdownId === entry.id ? 'z-10' : ''}`}>
+                                      <button 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setOpenDropdownId(openDropdownId === entry.id ? null : entry.id);
+                                        }}
+                                        className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-200 transition-colors cursor-pointer"
+                                      >
+                                        <MoreVertical size={16} />
+                                      </button>
+                                      {openDropdownId === entry.id && (
+                                        <div className="absolute right-0 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                                          <button 
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleDeleteEntry(entry.id);
+                                              setOpenDropdownId(null);
+                                            }}
+                                            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                          >
+                                            <Trash2 size={14} /> Delete
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               </div>
@@ -388,9 +392,9 @@ export default function App() {
                 <h1 className="text-2xl font-bold text-gray-800">Projects</h1>
                 <button 
                   onClick={() => setIsAddingProject(true)}
-                  className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 md:px-4 md:py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors text-sm md:text-base"
                 >
-                  <Plus size={18} /> New Project
+                  <Plus size={18} /> <span className="hidden sm:inline">New Project</span><span className="sm:hidden">New</span>
                 </button>
               </div>
 
@@ -487,7 +491,7 @@ export default function App() {
             <div className="max-w-5xl mx-auto flex flex-col gap-6">
               <h1 className="text-2xl font-bold text-gray-800">Reports</h1>
               
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 md:gap-6">
                 <div className="bg-white p-6 border border-gray-200 rounded-lg shadow-sm flex flex-col gap-2">
                   <span className="text-sm text-gray-500 font-medium uppercase tracking-wider">Total Time</span>
                   <span className="text-3xl font-mono font-bold text-gray-800">
@@ -612,6 +616,31 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Bottom Navigation (Mobile) */}
+      <nav className="md:hidden bg-white border-t border-gray-200 flex items-center justify-around h-16 flex-shrink-0 z-50">
+        <button 
+          onClick={() => setCurrentView('tracker')} 
+          className={`flex flex-col items-center justify-center w-full h-full ${currentView === 'tracker' ? 'text-blue-600' : 'text-gray-500'}`}
+        >
+          <Clock size={20} />
+          <span className="text-[10px] font-medium mt-1">Tracker</span>
+        </button>
+        <button 
+          onClick={() => setCurrentView('projects')} 
+          className={`flex flex-col items-center justify-center w-full h-full ${currentView === 'projects' ? 'text-blue-600' : 'text-gray-500'}`}
+        >
+          <List size={20} />
+          <span className="text-[10px] font-medium mt-1">Projects</span>
+        </button>
+        <button 
+          onClick={() => setCurrentView('reports')} 
+          className={`flex flex-col items-center justify-center w-full h-full ${currentView === 'reports' ? 'text-blue-600' : 'text-gray-500'}`}
+        >
+          <BarChart2 size={20} />
+          <span className="text-[10px] font-medium mt-1">Reports</span>
+        </button>
+      </nav>
     </div>
   );
 }
