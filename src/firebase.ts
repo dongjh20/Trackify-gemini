@@ -15,3 +15,7 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+// Force account selection even if the user is already signed into a Google account in the browser
+googleProvider.setCustomParameters({
+  prompt: 'select_account'
+});

@@ -208,7 +208,21 @@ export default function App() {
           <h1 className="text-2xl font-bold text-gray-800 mb-2">Trackify</h1>
           <p className="text-gray-500 mb-8">Sign in to sync your time across all your devices securely.</p>
           <button
-            onClick={() => signInWithPopup(auth, googleProvider)}
+            onClick={async () => {
+              try {
+                await signInWithPopup(auth, googleProvider);
+              } catch (error: any) {
+                console.error("Auth Error:", error);
+                if (error.code === 'auth/configuration-not-found') {
+                  alert("Authentication failed: Google Sign-In is not enabled in your Firebase Console. Please go to Authentication -> Sign-in method and enable Google.");
+                } else if (error.code === 'auth/unauthorized-domain') {
+                  const currentDomain = window.location.hostname;
+                  alert(`Authentication failed: The domain "${currentDomain}" is not authorized for OAuth operations.\n\nTo fix this:\n1. Go to Firebase Console -> Authentication -> Settings -> Authorized domains\n2. Click "Add domain"\n3. Paste exactly this: ${currentDomain}\n4. Click "Add"\n5. Refresh this page and try again.`);
+                } else {
+                  alert(`Authentication failed: ${error.message}`);
+                }
+              }
+            }}
             className="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2.5 px-4 rounded-xl transition-colors flex items-center justify-center gap-3 shadow-sm"
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
