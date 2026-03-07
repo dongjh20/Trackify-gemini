@@ -26,10 +26,8 @@ export function TimerDisplay({ activeTimer, className = "" }: Props) {
 
     updateDuration();
     
-    if (!activeTimer.isPaused) {
-      const interval = setInterval(updateDuration, 1000);
-      return () => clearInterval(interval);
-    }
+    const interval = setInterval(updateDuration, 1000);
+    return () => clearInterval(interval);
   }, [activeTimer]);
 
   return (

@@ -1,4 +1,4 @@
-import { TimeEntry } from './types';
+import { TimeEntry, Project } from './types';
 
 export function formatDuration(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -30,4 +30,39 @@ export function groupByDay(entries: TimeEntry[]) {
     groups[dateStr].push(entry);
   });
   return groups;
+}
+
+export function fillGapsWithIdle(entries: TimeEntry[], idleProject: Project | undefined): TimeEntry[] {
+  if (!idleProject || entries.length === 0) return entries;
+  
+  // Sort entries by start time
+  const sorted = [...entries].sort((a, b) => a.startTime - b.startTime);
+  const result: TimeEntry[] = [];
+  
+  for (let i = 0; i < sorted.length; i++) {
+    const current = sorted[i];
+    
+    // If there's a gap between previous entry and current one
+    if (i > 0) {
+      const previous = sorted[i - 1];
+      const gap = current.startTime - previous.endTime;
+      
+      // If gap is more than 1 minute (60000ms)
+      if (gap > 60000) {
+        result.push({
+          id: `idle-${previous.endTime}`,
+          description: 'Idle',
+          projectId: idleProject.id,
+          startTime: previous.endTime,
+          endTime: current.startTime,
+          duration: gap,
+          userId: current.userId
+        } as TimeEntry);
+      }
+    }
+    
+    result.push(current);
+  }
+  
+  return result;
 }

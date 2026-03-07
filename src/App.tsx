@@ -5,7 +5,7 @@ import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where
 import { signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword, createUserWithEmailAndPassword, deleteUser, sendEmailVerification } from 'firebase/auth';
 import { db, auth, googleProvider } from './firebase';
 import { Project, TimeEntry, ActiveTimer } from './types';
-import { formatDuration, formatTime, formatDateStr, groupByDay } from './utils';
+import { formatDuration, formatTime, formatDateStr, groupByDay, fillGapsWithIdle } from './utils';
 import { ProjectSelector } from './components/ProjectSelector';
 import { TimerDisplay } from './components/TimerDisplay';
 
@@ -29,6 +29,7 @@ export default function App() {
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [selectedChartProject, setSelectedChartProject] = useState<string | null>(null);
+  const [selectedBarProject, setSelectedBarProject] = useState<string | null>(null);
 
   // Email/Password Auth State
   const [email, setEmail] = useState('');
@@ -40,6 +41,9 @@ export default function App() {
   const [verificationError, setVerificationError] = useState('');
   const [isCheckingVerification, setIsCheckingVerification] = useState(false);
   const [reportTimeRange, setReportTimeRange] = useState<'day' | 'week' | 'month' | 'year'>('week');
+  const [reportView, setReportView] = useState<'stats' | 'timeline'>('stats');
+
+  const idleProject = projects.find(p => p.name.toLowerCase() === 'idle');
 
   const filteredReportEntries = useMemo(() => {
     const now = new Date();
@@ -61,8 +65,9 @@ export default function App() {
         break;
     }
     
-    return entries.filter(e => e.startTime >= startTimeLimit);
-  }, [entries, reportTimeRange]);
+    const baseEntries = entries.filter(e => e.startTime >= startTimeLimit);
+    return fillGapsWithIdle(baseEntries, idleProject);
+  }, [entries, reportTimeRange, idleProject]);
 
   // Delete Account Modal State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -197,10 +202,25 @@ export default function App() {
 
   const handleResume = async () => {
     if (activeTimer && activeTimer.isPaused && activeTimer.lastPauseTime && user) {
-      const pausedDuration = Date.now() - activeTimer.lastPauseTime;
+      const now = Date.now();
+      const pauseDuration = now - activeTimer.lastPauseTime;
+      
+      // 1. Record the pause as an Idle entry
+      const idleEntryRef = doc(collection(db, 'entries'));
+      await setDoc(idleEntryRef, {
+        id: idleEntryRef.id,
+        description: 'Idle (Pause)',
+        projectId: idleProject?.id || null,
+        startTime: activeTimer.lastPauseTime,
+        endTime: now,
+        duration: pauseDuration,
+        userId: user.uid
+      });
+
+      // 2. Resume the main timer
       await updateDoc(doc(db, 'activeTimers', user.uid), {
         isPaused: false,
-        totalPausedTime: activeTimer.totalPausedTime + pausedDuration,
+        totalPausedTime: activeTimer.totalPausedTime + pauseDuration,
         lastPauseTime: null,
       });
     }
@@ -210,10 +230,23 @@ export default function App() {
     if (activeTimer && user) {
       try {
         const endTime = Date.now();
-        let finalDuration = endTime - activeTimer.startTime - activeTimer.totalPausedTime;
+        
+        // If stopped while paused, we should also record the final pause segment
         if (activeTimer.isPaused && activeTimer.lastPauseTime) {
-          finalDuration -= (endTime - activeTimer.lastPauseTime);
+          const pauseDuration = endTime - activeTimer.lastPauseTime;
+          const idleEntryRef = doc(collection(db, 'entries'));
+          await setDoc(idleEntryRef, {
+            id: idleEntryRef.id,
+            description: 'Idle (Pause)',
+            projectId: idleProject?.id || null,
+            startTime: activeTimer.lastPauseTime,
+            endTime: endTime,
+            duration: pauseDuration,
+            userId: user.uid
+          });
         }
+
+        const finalDuration = endTime - activeTimer.startTime - activeTimer.totalPausedTime - (activeTimer.isPaused && activeTimer.lastPauseTime ? (endTime - activeTimer.lastPauseTime) : 0);
         
         const newEntryRef = doc(collection(db, 'entries'));
         const newEntry: TimeEntry = {
@@ -221,13 +254,14 @@ export default function App() {
           description: activeTimer.description,
           projectId: activeTimer.projectId,
           startTime: activeTimer.startTime,
-          endTime: activeTimer.isPaused && activeTimer.lastPauseTime ? activeTimer.lastPauseTime : endTime,
+          endTime: endTime,
           duration: finalDuration,
+          userId: user.uid
         };
         
-        await setDoc(newEntryRef, { ...newEntry, userId: user.uid });
+        await setDoc(newEntryRef, newEntry);
         await deleteDoc(doc(db, 'activeTimers', user.uid));
-        setDraftProjectId(activeTimer.projectId); // Remember the project for the next entry
+        setDraftProjectId(activeTimer.projectId);
       } catch (error) {
         console.error("Error stopping timer:", error);
         alert("Failed to stop timer. Please try again.");
@@ -311,7 +345,25 @@ export default function App() {
     }
   };
 
-  const groupedEntries = groupByDay(entries);
+  // Ensure Idle project exists
+  useEffect(() => {
+    if (!user || isLoading) return;
+    // Wait for projects to be loaded if they exist
+    if (projects.length === 0) {
+      // We might need to wait a bit or check if we actually have NO projects
+      // For now, let's just check if projects are loaded
+      return;
+    }
+    const hasIdle = projects.some(p => p.name.toLowerCase() === 'idle');
+    if (!hasIdle) {
+      handleAddProject('Idle', '#94a3b8');
+    }
+  }, [user, projects, isLoading]);
+
+  const groupedEntries = useMemo(() => {
+    const filled = fillGapsWithIdle(entries, idleProject);
+    return groupByDay(filled);
+  }, [entries, idleProject]);
 
   if (isLoading) {
     return (
@@ -521,6 +573,11 @@ export default function App() {
               className="w-full text-lg border-none focus:ring-0 p-0 placeholder-gray-400 text-gray-800 outline-none"
               value={activeTimer ? activeTimer.description : draftDescription}
               onChange={(e) => activeTimer ? updateActiveTimer({ description: e.target.value }) : setDraftDescription(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !activeTimer) {
+                  handleStart();
+                }
+              }}
             />
             
             <div className="flex items-center justify-between">
@@ -631,6 +688,11 @@ export default function App() {
                   className="w-full md:flex-1 text-base border-none focus:ring-0 p-0 placeholder-gray-400 bg-transparent outline-none"
                   value={activeTimer ? activeTimer.description : draftDescription}
                   onChange={(e) => activeTimer ? updateActiveTimer({ description: e.target.value }) : setDraftDescription(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !activeTimer) {
+                      handleStart();
+                    }
+                  }}
                 />
                 
                 <div className="flex items-center justify-between w-full md:w-auto gap-2 md:gap-6">
@@ -692,7 +754,8 @@ export default function App() {
                   </div>
                 ) : (
                   Object.entries(groupedEntries).sort(([dateA], [dateB]) => new Date(dateB).getTime() - new Date(dateA).getTime()).map(([date, dayEntries]) => {
-                    const dayTotal = dayEntries.reduce((acc, entry) => acc + entry.duration, 0);
+                    const entries = dayEntries as TimeEntry[];
+                    const dayTotal = entries.reduce((acc, entry) => acc + entry.duration, 0);
                     
                     return (
                       <div key={date} className="flex flex-col gap-2">
@@ -702,10 +765,10 @@ export default function App() {
                         </div>
                         
                         <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                          {dayEntries.map((entry, index) => {
+                          {entries.map((entry, index) => {
                             const project = projects.find(p => p.id === entry.projectId);
                             return (
-                              <div key={entry.id} className={`flex flex-col md:flex-row md:items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== dayEntries.length - 1 ? 'border-b border-gray-100' : ''}`}>
+                              <div key={entry.id} className={`flex flex-col md:flex-row md:items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== entries.length - 1 ? 'border-b border-gray-100' : ''}`}>
                                 <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4 flex-1 mb-3 md:mb-0">
                                   <span className={`text-gray-800 font-medium ${!entry.description ? 'text-gray-400 italic' : ''}`}>
                                     {entry.description || '(no description)'}
@@ -872,20 +935,38 @@ export default function App() {
             <div className="max-w-5xl mx-auto flex flex-col gap-6">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <h1 className="text-2xl font-bold text-gray-800">Reports</h1>
-                <div className="flex bg-gray-200 p-1 rounded-lg self-start sm:self-auto">
-                  {(['day', 'week', 'month', 'year'] as const).map(range => (
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="flex bg-gray-200 p-1 rounded-lg">
+                    {(['day', 'week', 'month', 'year'] as const).map(range => (
+                      <button
+                        key={range}
+                        onClick={() => setReportTimeRange(range)}
+                        className={`px-4 py-1.5 text-sm font-medium rounded-md capitalize transition-colors ${reportTimeRange === range ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                      >
+                        {range === 'day' ? 'Today' : range === 'week' ? 'Last 7 Days' : `This ${range}`}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex bg-gray-200 p-1 rounded-lg">
                     <button
-                      key={range}
-                      onClick={() => setReportTimeRange(range)}
-                      className={`px-4 py-1.5 text-sm font-medium rounded-md capitalize transition-colors ${reportTimeRange === range ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                      onClick={() => setReportView('stats')}
+                      className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${reportView === 'stats' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                     >
-                      {range === 'day' ? 'Today' : range === 'week' ? 'Last 7 Days' : `This ${range}`}
+                      <BarChart2 size={16} className="inline mr-1" /> Stats
                     </button>
-                  ))}
+                    <button
+                      onClick={() => setReportView('timeline')}
+                      className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${reportView === 'timeline' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      <List size={16} className="inline mr-1" /> Timeline
+                    </button>
+                  </div>
                 </div>
               </div>
               
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 md:gap-6">
+              {reportView === 'stats' ? (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 md:gap-6">
                 <div className="bg-white p-6 border border-gray-200 rounded-lg shadow-sm flex flex-col gap-2">
                   <span className="text-sm text-gray-500 font-medium uppercase tracking-wider">Total Time</span>
                   <span className="text-3xl font-mono font-bold text-gray-800">
@@ -1128,61 +1209,172 @@ export default function App() {
                 <div className="p-4 border-b border-gray-200 bg-gray-50">
                   <h2 className="font-semibold text-gray-800">Time by Project (Bar Chart)</h2>
                 </div>
-                <div className="p-4 h-72">
-                  {(() => {
-                    const chartData = projects.map(p => {
-                      const duration = filteredReportEntries.filter(e => e.projectId === p.id).reduce((acc, e) => acc + e.duration, 0);
-                      return { name: p.name, value: duration, color: p.color, id: p.id };
-                    }).filter(d => d.value > 0);
+                <div className="p-4 flex flex-col md:flex-row gap-6">
+                  <div className="w-full md:w-1/2 h-80">
+                    {(() => {
+                      const totalDuration = filteredReportEntries.reduce((acc, e) => acc + e.duration, 0);
+                      const chartData = projects.map(p => {
+                        const duration = filteredReportEntries.filter(e => e.projectId === p.id).reduce((acc, e) => acc + e.duration, 0);
+                        return { name: p.name, value: duration, color: p.color, id: p.id };
+                      }).filter(d => d.value > 0);
 
-                    const noProjectDuration = filteredReportEntries.filter(e => !e.projectId).reduce((acc, e) => acc + e.duration, 0);
-                    if (noProjectDuration > 0) {
-                      chartData.push({ name: 'No Project', value: noProjectDuration, color: '#9ca3af', id: 'no-project' });
-                    }
-
-                    chartData.sort((a, b) => b.value - a.value);
-
-                    const CustomBarTooltip = ({ active, payload }: any) => {
-                      if (active && payload && payload.length) {
-                        return (
-                          <div className="bg-white p-2 border border-gray-200 shadow-sm rounded text-sm">
-                            <p className="font-medium text-gray-800">{payload[0].payload.name}</p>
-                            <p className="text-gray-600 font-mono">{formatDuration(payload[0].value)}</p>
-                          </div>
-                        );
+                      const noProjectDuration = filteredReportEntries.filter(e => !e.projectId).reduce((acc, e) => acc + e.duration, 0);
+                      if (noProjectDuration > 0) {
+                        chartData.push({ name: 'No Project', value: noProjectDuration, color: '#9ca3af', id: 'no-project' });
                       }
-                      return null;
-                    };
 
-                    return chartData.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                          <XAxis 
-                            dataKey="name" 
-                            axisLine={false} 
-                            tickLine={false} 
-                            tick={{ fontSize: 12, fill: '#6b7280' }} 
-                            dy={10} 
-                          />
-                          <YAxis 
-                            tickFormatter={(val) => `${Math.floor(val / 3600000)}h`} 
-                            axisLine={false} 
-                            tickLine={false} 
-                            tick={{ fontSize: 12, fill: '#6b7280' }} 
-                          />
-                          <RechartsTooltip content={<CustomBarTooltip />} cursor={{ fill: '#f3f4f6' }} />
-                          <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={60}>
-                            {chartData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.color} />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
+                      chartData.sort((a, b) => b.value - a.value);
+
+                      const CustomBarTooltip = ({ active, payload }: any) => {
+                        if (active && payload && payload.length) {
+                          const percent = totalDuration > 0 ? ((payload[0].value / totalDuration) * 100).toFixed(1) : 0;
+                          return (
+                            <div className="bg-white p-2 border border-gray-200 shadow-sm rounded text-sm">
+                              <p className="font-medium text-gray-800">{payload[0].payload.name}</p>
+                              <p className="text-gray-600 font-mono">{formatDuration(payload[0].value)} ({percent}%)</p>
+                            </div>
+                          );
+                        }
+                        return null;
+                      };
+
+                      return chartData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+                            <XAxis 
+                              dataKey="name" 
+                              axisLine={false} 
+                              tickLine={false} 
+                              tick={{ fontSize: 12, fill: '#6b7280' }} 
+                              dy={10} 
+                            />
+                            <YAxis 
+                              tickFormatter={(val) => `${Math.floor(val / 3600000)}h`} 
+                              axisLine={false} 
+                              tickLine={false} 
+                              tick={{ fontSize: 12, fill: '#6b7280' }} 
+                            />
+                            <RechartsTooltip content={<CustomBarTooltip />} cursor={{ fill: '#f3f4f6' }} />
+                            <Bar 
+                              dataKey="value" 
+                              radius={[4, 4, 0, 0]} 
+                              maxBarSize={60}
+                              onClick={(data) => setSelectedBarProject(selectedBarProject === data.id ? null : data.id)}
+                              className="cursor-pointer"
+                            >
+                              {chartData.map((entry, index) => (
+                                <Cell 
+                                  key={`cell-${index}`} 
+                                  fill={entry.color} 
+                                  stroke={selectedBarProject === entry.id ? '#000' : 'none'} 
+                                  strokeWidth={selectedBarProject === entry.id ? 2 : 0} 
+                                />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-gray-400 text-sm">No data to display</div>
+                      );
+                    })()}
+                  </div>
+                  
+                  <div className="w-full md:w-1/2 flex flex-col h-80">
+                    <h3 className="font-medium text-gray-700 mb-3 border-b border-gray-100 pb-2 flex-shrink-0">
+                      {selectedBarProject ? (
+                        selectedBarProject === 'no-project' ? 'No Project Details' : projects.find(p => p.id === selectedBarProject)?.name + ' Details'
+                      ) : (
+                        'Click a bar to view details'
+                      )}
+                    </h3>
+                    
+                    {selectedBarProject ? (
+                      <div className="flex flex-col h-full overflow-hidden">
+                        {(() => {
+                          const projectEntries = selectedBarProject === 'no-project' 
+                            ? filteredReportEntries.filter(e => !e.projectId) 
+                            : filteredReportEntries.filter(e => e.projectId === selectedBarProject);
+                          
+                          const projectTotalDuration = projectEntries.reduce((acc, e) => acc + e.duration, 0);
+                          
+                          const entriesByDesc = projectEntries.reduce((acc, e) => {
+                            const desc = e.description || 'No description';
+                            if (!acc[desc]) acc[desc] = 0;
+                            acc[desc] += e.duration;
+                            return acc;
+                          }, {} as Record<string, number>);
+
+                          const drillDownData = Object.entries(entriesByDesc).map(([name, value], index) => {
+                            const colors = ['#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#f87171', '#f472b6', '#2dd4bf', '#94a3b8'];
+                            return { name, value: Number(value), color: colors[index % colors.length] };
+                          }).sort((a, b) => b.value - a.value);
+
+                          const DrillDownBarTooltip = ({ active, payload }: any) => {
+                            if (active && payload && payload.length) {
+                              const percent = projectTotalDuration > 0 ? ((payload[0].value / projectTotalDuration) * 100).toFixed(1) : 0;
+                              return (
+                                <div className="bg-white p-2 border border-gray-200 shadow-sm rounded text-sm z-50">
+                                  <p className="font-medium text-gray-800">{payload[0].payload.name}</p>
+                                  <p className="text-gray-600 font-mono">{formatDuration(payload[0].value)} ({percent}%)</p>
+                                </div>
+                              );
+                            }
+                            return null;
+                          };
+
+                          return (
+                            <>
+                              <div className="h-56 flex-shrink-0 mb-2">
+                                <ResponsiveContainer width="100%" height="100%">
+                                  <BarChart data={drillDownData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+                                    <XAxis 
+                                      dataKey="name" 
+                                      axisLine={false} 
+                                      tickLine={false} 
+                                      tick={{ fontSize: 10, fill: '#6b7280' }} 
+                                      dy={10} 
+                                      tickFormatter={(val) => val.length > 10 ? val.substring(0, 10) + '...' : val}
+                                    />
+                                    <YAxis 
+                                      tickFormatter={(val) => `${Math.floor(val / 3600000)}h`} 
+                                      axisLine={false} 
+                                      tickLine={false} 
+                                      tick={{ fontSize: 10, fill: '#6b7280' }} 
+                                    />
+                                    <RechartsTooltip content={<DrillDownBarTooltip />} cursor={{ fill: '#f3f4f6' }} />
+                                    <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={40}>
+                                      {drillDownData.map((entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={entry.color} />
+                                      ))}
+                                    </Bar>
+                                  </BarChart>
+                                </ResponsiveContainer>
+                              </div>
+                              <div className="overflow-y-auto flex-1 pr-2">
+                                <div className="flex flex-col gap-2">
+                                  {projectEntries.sort((a, b) => b.startTime - a.startTime).map(entry => (
+                                    <div key={entry.id} className="flex items-center justify-between text-sm p-2 bg-gray-50 rounded border border-gray-100">
+                                      <div className="flex flex-col">
+                                        <span className="text-gray-800 font-medium">{entry.description || <span className="text-gray-400 italic">No description</span>}</span>
+                                        <span className="text-xs text-gray-500">{new Date(entry.startTime).toLocaleDateString()} {formatTime(entry.startTime)}</span>
+                                      </div>
+                                      <span className="font-mono text-gray-600">{formatDuration(entry.duration)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </div>
                     ) : (
-                      <div className="h-full flex items-center justify-center text-gray-400 text-sm">No data to display</div>
-                    );
-                  })()}
+                      <div className="text-sm text-gray-500 flex items-center justify-center h-full">
+                        Select a project from the chart to see its detailed breakdown.
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -1288,9 +1480,69 @@ export default function App() {
                   )}
                 </div>
               </div>
+            </>
+          ) : (
+            <div className="flex flex-col gap-8">
+              {Object.entries(groupByDay(filteredReportEntries))
+                .sort(([dateA], [dateB]) => new Date(dateB).getTime() - new Date(dateA).getTime())
+                .map(([date, dayEntries]) => (
+                  <div key={date} className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+                    <div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                      <h3 className="font-bold text-gray-800">{formatDateStr(date)}</h3>
+                      <span className="text-sm font-mono text-gray-500">
+                        Total: {formatDuration(dayEntries.reduce((acc, e) => acc + e.duration, 0))}
+                      </span>
+                    </div>
+                    <div className="p-6">
+                      <div className="relative border-l-2 border-gray-100 ml-4 pl-8 flex flex-col gap-6">
+                        {dayEntries.sort((a, b) => a.startTime - b.startTime).map((entry, idx) => {
+                          const project = projects.find(p => p.id === entry.projectId);
+                          return (
+                            <div key={entry.id} className="relative">
+                              {/* Dot on the line */}
+                              <div 
+                                className="absolute -left-[41px] top-1.5 w-4 h-4 rounded-full border-2 border-white shadow-sm"
+                                style={{ backgroundColor: project?.color || '#9ca3af' }}
+                              ></div>
+                              
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                <div className="flex flex-col">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-gray-800">{entry.description || 'No description'}</span>
+                                    {project && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded-full text-white font-medium" style={{ backgroundColor: project.color }}>
+                                        {project.name}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-xs text-gray-500 font-mono">
+                                    {formatTime(entry.startTime)} — {formatTime(entry.endTime)}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                  <span className="font-mono text-sm text-gray-600 bg-gray-50 px-2 py-1 rounded">
+                                    {formatDuration(entry.duration)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              {filteredReportEntries.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-20 text-gray-400 bg-white border border-gray-200 rounded-lg">
+                  <Clock size={48} className="mb-4 opacity-20" />
+                  <p className="text-lg">No data for this period</p>
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          )}
+        </div>
+      </div>
+    )}
         {currentView === 'settings' && (
           <div className="flex-1 overflow-y-auto bg-gray-50 p-4 md:p-8">
             <div className="max-w-2xl mx-auto">

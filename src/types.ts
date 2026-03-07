@@ -11,6 +11,7 @@ export type TimeEntry = {
   startTime: number;
   endTime: number;
   duration: number;
+  userId: string;
 };
 
 export type ActiveTimer = {
@@ -22,4 +23,9 @@ export type ActiveTimer = {
   isPaused: boolean;
   isActive: boolean;
   userId: string;
+  isIdle?: boolean;
+  resumeTo?: {
+    description: string;
+    projectId: string | null;
+  };
 };
