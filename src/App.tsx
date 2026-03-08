@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut, Mail, Lock, RotateCcw, Trash, Upload, Download, Image as ImageIcon } from 'lucide-react';
-import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
+import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList } from 'recharts';
 import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where, getDocs, orderBy, limit, deleteField } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword, createUserWithEmailAndPassword, deleteUser, sendEmailVerification } from 'firebase/auth';
 import { db, auth, googleProvider } from './firebase';
@@ -88,6 +88,25 @@ export default function App() {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [deleteError, setDeleteError] = useState('');
 
+  // Hover state for spacebar shortcuts
+  const [hoveredButton, setHoveredButton] = useState<'pause' | 'resume' | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        if (hoveredButton === 'pause') {
+          e.preventDefault();
+          handlePause();
+        } else if (hoveredButton === 'resume') {
+          e.preventDefault();
+          handleResume();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [hoveredButton, activeTimer]);
+
   useEffect(() => {
     const handleClickOutside = () => setOpenDropdownId(null);
     document.addEventListener('click', handleClickOutside);
@@ -126,6 +145,12 @@ export default function App() {
     const unsubscribeProjects = onSnapshot(qProjects, (snapshot) => {
       const projs: Project[] = [];
       snapshot.forEach(doc => projs.push({ id: doc.id, ...doc.data() } as Project));
+      projs.sort((a, b) => {
+        if (a.order !== undefined && b.order !== undefined) return a.order - b.order;
+        if (a.order !== undefined) return -1;
+        if (b.order !== undefined) return 1;
+        return a.name.localeCompare(b.name);
+      });
       setProjects(projs);
     }, (error) => console.error("Projects error:", error));
 
@@ -205,6 +230,35 @@ export default function App() {
     cleanup();
   }, [user]);
 
+  // Migrate old idle entries to Idle project
+  useEffect(() => {
+    if (!user || projects.length === 0 || entries.length === 0) return;
+    
+    const migrateIdleEntries = async () => {
+      const idleEntries = entries.filter(e => 
+        !e.projectId && 
+        (e.description === 'Idle (Paused)' || e.description === 'Idle (Stopped)')
+      );
+      
+      if (idleEntries.length > 0) {
+        try {
+          const idleProjectId = await getOrCreateIdleProject();
+          if (idleProjectId) {
+            const updates = idleEntries.map(e => 
+              updateDoc(doc(db, 'entries', e.id), { projectId: idleProjectId })
+            );
+            await Promise.all(updates);
+            console.log(`Migrated ${idleEntries.length} idle entries to Idle project.`);
+          }
+        } catch (error) {
+          console.error("Error migrating idle entries:", error);
+        }
+      }
+    };
+    
+    migrateIdleEntries();
+  }, [user, entries, projects]);
+
   const toggleReportProject = (id: string) => {
     setExpandedReportProjects(prev =>
       prev.includes(id) ? prev.filter(pId => pId !== id) : [...prev, id]
@@ -214,10 +268,12 @@ export default function App() {
   const handleAddProject = async (name: string, color: string) => {
     if (!user) return;
     const newProjectRef = doc(collection(db, 'projects'));
+    const maxOrder = projects.length > 0 ? Math.max(...projects.map(p => p.order || 0)) : 0;
     const newProject: Project = {
       id: newProjectRef.id,
       name,
-      color
+      color,
+      order: maxOrder + 1
     };
     await setDoc(newProjectRef, { ...newProject, userId: user.uid });
     
@@ -260,6 +316,47 @@ export default function App() {
         console.error("Error renaming project:", error);
         alert("Failed to rename project.");
       }
+    }
+  };
+
+  const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
+
+  const handleDragStart = (e: React.DragEvent, id: string) => {
+    setDraggedProjectId(id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = async (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (!draggedProjectId || draggedProjectId === targetId) return;
+    await handleReorderProject(draggedProjectId, targetId);
+    setDraggedProjectId(null);
+  };
+
+  const handleReorderProject = async (draggedId: string, targetId: string) => {
+    if (draggedId === targetId) return;
+
+    const newProjects = [...projects];
+    const draggedIndex = newProjects.findIndex(p => p.id === draggedId);
+    const targetIndex = newProjects.findIndex(p => p.id === targetId);
+
+    const [draggedProject] = newProjects.splice(draggedIndex, 1);
+    newProjects.splice(targetIndex, 0, draggedProject);
+
+    // Update orders optimistically or just send to DB
+    const updates = newProjects.map((p, index) => {
+      return updateDoc(doc(db, 'projects', p.id), { order: index });
+    });
+
+    try {
+      await Promise.all(updates);
+    } catch (error) {
+      console.error("Error updating project order:", error);
     }
   };
 
@@ -380,6 +477,17 @@ export default function App() {
     }
   };
 
+  const getOrCreateIdleProject = async () => {
+    if (!user) return null;
+    let idleProj = projects.find(p => p.name.toLowerCase() === 'idle');
+    if (!idleProj) {
+      const newRef = doc(collection(db, 'projects'));
+      idleProj = { id: newRef.id, name: 'Idle', color: '#9ca3af', order: 999 };
+      await setDoc(newRef, { ...idleProj, userId: user.uid });
+    }
+    return idleProj.id;
+  };
+
   const handleStart = async () => {
     if (activeTimer || !user) return;
     const now = Date.now();
@@ -390,11 +498,12 @@ export default function App() {
       if (latestEndTime > 0 && latestEndTime < now) {
         const idleDuration = now - latestEndTime;
         if (idleDuration > 1000 && idleDuration < 12 * 60 * 60 * 1000) { // Only record if gap is > 1 second and < 12 hours
+          const idleProjectId = await getOrCreateIdleProject();
           const idleEntryRef = doc(collection(db, 'entries'));
           await setDoc(idleEntryRef, {
             id: idleEntryRef.id,
             description: 'Idle (Stopped)',
-            projectId: null,
+            projectId: idleProjectId,
             startTime: latestEndTime,
             endTime: now,
             duration: idleDuration,
@@ -455,11 +564,12 @@ export default function App() {
       
       // 1. Record the pause as an entry with no project
       if (pauseDuration > 0) {
+        const idleProjectId = await getOrCreateIdleProject();
         const idleEntryRef = doc(collection(db, 'entries'));
         await setDoc(idleEntryRef, {
           id: idleEntryRef.id,
           description: 'Idle (Paused)',
-          projectId: null,
+          projectId: idleProjectId,
           startTime: activeTimer.lastPauseTime,
           endTime: now,
           duration: pauseDuration,
@@ -486,11 +596,12 @@ export default function App() {
         if (activeTimer.isPaused && activeTimer.lastPauseTime) {
           const pauseDuration = endTime - activeTimer.lastPauseTime;
           if (pauseDuration > 0) {
+            const idleProjectId = await getOrCreateIdleProject();
             const idleEntryRef = doc(collection(db, 'entries'));
             await setDoc(idleEntryRef, {
               id: idleEntryRef.id,
               description: 'Idle (Paused)',
-              projectId: null,
+              projectId: idleProjectId,
               startTime: activeTimer.lastPauseTime,
               endTime: endTime,
               duration: pauseDuration,
@@ -875,6 +986,7 @@ export default function App() {
                 selectedProjectId={activeTimer ? activeTimer.projectId : draftProjectId}
                 onChange={(id) => activeTimer ? updateActiveTimer({ projectId: id }) : setDraftProjectId(id)}
                 onAddProject={handleAddProject}
+                onReorder={handleReorderProject}
                 compact
               />
               
@@ -909,11 +1021,21 @@ export default function App() {
                   ) : (
                     <>
                       {activeTimer.isPaused ? (
-                        <button onClick={handleResume} className="w-10 h-10 rounded-full bg-blue-500 hover:bg-blue-600 text-white flex items-center justify-center shadow-md transition-transform hover:scale-105">
+                        <button 
+                          onClick={handleResume} 
+                          onMouseEnter={() => setHoveredButton('resume')}
+                          onMouseLeave={() => setHoveredButton(null)}
+                          className="w-10 h-10 rounded-full bg-blue-500 hover:bg-blue-600 text-white flex items-center justify-center shadow-md transition-transform hover:scale-105"
+                        >
                           <Play size={18} className="ml-1" />
                         </button>
                       ) : (
-                        <button onClick={handlePause} className="w-10 h-10 rounded-full bg-amber-500 hover:bg-amber-600 text-white flex items-center justify-center shadow-md transition-transform hover:scale-105">
+                        <button 
+                          onClick={handlePause} 
+                          onMouseEnter={() => setHoveredButton('pause')}
+                          onMouseLeave={() => setHoveredButton(null)}
+                          className="w-10 h-10 rounded-full bg-amber-500 hover:bg-amber-600 text-white flex items-center justify-center shadow-md transition-transform hover:scale-105"
+                        >
                           <Pause size={18} />
                         </button>
                       )}
@@ -1016,6 +1138,7 @@ export default function App() {
                     selectedProjectId={activeTimer ? activeTimer.projectId : draftProjectId}
                     onChange={(id) => activeTimer ? updateActiveTimer({ projectId: id }) : setDraftProjectId(id)}
                     onAddProject={handleAddProject}
+                    onReorder={handleReorderProject}
                   />
                   
                   <div className="hidden md:block h-6 w-px bg-gray-200"></div>
@@ -1051,11 +1174,21 @@ export default function App() {
                       ) : (
                         <div className="flex items-center gap-2">
                           {activeTimer.isPaused ? (
-                            <button onClick={handleResume} className="w-20 md:w-24 h-10 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 font-medium flex items-center justify-center transition-colors cursor-pointer">
+                            <button 
+                              onClick={handleResume} 
+                              onMouseEnter={() => setHoveredButton('resume')}
+                              onMouseLeave={() => setHoveredButton(null)}
+                              className="w-20 md:w-24 h-10 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 font-medium flex items-center justify-center transition-colors cursor-pointer"
+                            >
                               RESUME
                             </button>
                           ) : (
-                            <button onClick={handlePause} className="w-20 md:w-24 h-10 rounded bg-amber-100 hover:bg-amber-200 text-amber-700 font-medium flex items-center justify-center transition-colors cursor-pointer">
+                            <button 
+                              onClick={handlePause} 
+                              onMouseEnter={() => setHoveredButton('pause')}
+                              onMouseLeave={() => setHoveredButton(null)}
+                              className="w-20 md:w-24 h-10 rounded bg-amber-100 hover:bg-amber-200 text-amber-700 font-medium flex items-center justify-center transition-colors cursor-pointer"
+                            >
                               PAUSE
                             </button>
                           )}
@@ -1097,7 +1230,14 @@ export default function App() {
                         <div className="flex items-center justify-between px-2 text-sm text-gray-500 font-medium">
                           <span>{formatDateStr(date)}</span>
                           <span className="flex items-center gap-3">
-                            <span>Total: {formatDuration(dayTotal)}</span>
+                            <span>
+                              {(() => {
+                                const idleTime = entries.filter(e => e.description.startsWith('Idle (') || projects.find(p => p.id === e.projectId)?.name.toLowerCase() === 'idle').reduce((acc, e) => acc + e.duration, 0);
+                                const nonIdleTime = dayTotal - idleTime;
+                                const percentage = dayTotal > 0 ? Math.round((nonIdleTime / dayTotal) * 100) : 0;
+                                return `Total: ${formatDuration(nonIdleTime)} (${percentage}%) / ${formatDuration(dayTotal)}`;
+                              })()}
+                            </span>
                           </span>
                         </div>
                         
@@ -1240,7 +1380,14 @@ export default function App() {
               
               <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
                 {projects.map((project, index) => (
-                  <div key={project.id} className={`flex items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== projects.length - 1 ? 'border-b border-gray-100' : ''}`}>
+                  <div 
+                    key={project.id} 
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, project.id)}
+                    onDragOver={handleDragOver}
+                    onDrop={(e) => handleDrop(e, project.id)}
+                    className={`flex items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg cursor-move ${draggedProjectId === project.id ? 'opacity-50' : ''} ${index !== projects.length - 1 ? 'border-b border-gray-100' : ''}`}
+                  >
                     <div className="flex items-center gap-3">
                       <span className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color }}></span>
                       <span className="font-medium text-gray-800">{project.name}</span>
@@ -1339,6 +1486,91 @@ export default function App() {
                   <span className="text-3xl font-bold text-gray-800">
                     {new Set(filteredReportEntries.map(e => e.projectId).filter(Boolean)).size}
                   </span>
+                </div>
+              </div>
+
+              {/* Daily Trend Chart Section */}
+              <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden mt-4">
+                <div className="p-4 border-b border-gray-200 bg-gray-50">
+                  <h2 className="font-semibold text-gray-800">Daily Trend</h2>
+                </div>
+                <div className="p-4 h-80">
+                  {(() => {
+                    const dailyChartData = Object.entries(groupByDay(filteredReportEntries))
+                      .map(([date, dayEntries]) => {
+                        const dayTotal = dayEntries.reduce((acc, e) => acc + e.duration, 0);
+                        const idleTime = dayEntries.filter(e => e.description.startsWith('Idle (') || projects.find(p => p.id === e.projectId)?.name.toLowerCase() === 'idle').reduce((acc, e) => acc + e.duration, 0);
+                        const nonIdleTime = dayTotal - idleTime;
+                        const percent = dayTotal > 0 ? Math.round((nonIdleTime / dayTotal) * 100) : 0;
+                        return {
+                          date: formatDateStr(date),
+                          timestamp: new Date(date).getTime(),
+                          total: dayTotal,
+                          nonIdle: nonIdleTime,
+                          idle: idleTime,
+                          percentStr: `${percent}%`
+                        };
+                      })
+                      .sort((a, b) => a.timestamp - b.timestamp);
+
+                    if (dailyChartData.length === 0) {
+                      return <div className="h-full flex items-center justify-center text-gray-500">No data available</div>;
+                    }
+
+                    const CustomDailyTooltip = ({ active, payload, label }: any) => {
+                      if (active && payload && payload.length) {
+                        const total = payload.find((p: any) => p.dataKey === 'total')?.value || 0;
+                        const nonIdle = payload.find((p: any) => p.dataKey === 'nonIdle')?.value || 0;
+                        const percent = total > 0 ? ((nonIdle / total) * 100).toFixed(1) : 0;
+                        return (
+                          <div className="bg-white p-3 border border-gray-200 shadow-sm rounded text-sm z-50">
+                            <p className="font-medium text-gray-800 mb-2">{label}</p>
+                            <div className="flex flex-col gap-1">
+                              <p className="text-gray-600 font-mono flex justify-between gap-4">
+                                <span>Total:</span> <span>{formatDuration(total)}</span>
+                              </p>
+                              <p className="text-indigo-600 font-mono flex justify-between gap-4">
+                                <span>Non-Idle:</span> <span>{formatDuration(nonIdle)} ({percent}%)</span>
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return null;
+                    };
+
+                    return (
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+                        <BarChart data={dailyChartData} margin={{ top: 20, right: 10, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                          <XAxis 
+                            dataKey="date" 
+                            xAxisId="a"
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 12, fill: '#6b7280' }}
+                            dy={10}
+                          />
+                          <XAxis dataKey="date" xAxisId="b" hide />
+                          <YAxis 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fontSize: 12, fill: '#6b7280' }}
+                            tickFormatter={(value) => {
+                              const hours = Math.floor(value / (1000 * 60 * 60));
+                              return hours > 0 ? `${hours}h` : '';
+                            }}
+                          />
+                          <RechartsTooltip content={<CustomDailyTooltip />} cursor={{ fill: '#f3f4f6' }} />
+                          <Legend wrapperStyle={{ paddingTop: '20px' }} />
+                          <Bar dataKey="total" xAxisId="a" name="Total Time" fill="#e5e7eb" radius={[4, 4, 0, 0]}>
+                            <LabelList dataKey="percentStr" position="top" fill="#6b7280" fontSize={12} />
+                          </Bar>
+                          <Bar dataKey="nonIdle" xAxisId="b" name="Non-Idle Time" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    );
+                  })()}
                 </div>
               </div>
 
@@ -1847,7 +2079,13 @@ export default function App() {
                     <div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
                       <h3 className="font-bold text-gray-800">{formatDateStr(date)}</h3>
                       <span className="text-sm font-mono text-gray-500">
-                        Total: {formatDuration(dayEntries.reduce((acc, e) => acc + e.duration, 0))}
+                        {(() => {
+                          const dayTotal = dayEntries.reduce((acc, e) => acc + e.duration, 0);
+                          const idleTime = dayEntries.filter(e => e.description.startsWith('Idle (') || projects.find(p => p.id === e.projectId)?.name.toLowerCase() === 'idle').reduce((acc, e) => acc + e.duration, 0);
+                          const nonIdleTime = dayTotal - idleTime;
+                          const percentage = dayTotal > 0 ? Math.round((nonIdleTime / dayTotal) * 100) : 0;
+                          return `Total: ${formatDuration(nonIdleTime)} (${percentage}%) / ${formatDuration(dayTotal)}`;
+                        })()}
                       </span>
                     </div>
                     <div className="p-6">

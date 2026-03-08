@@ -2,6 +2,7 @@ export type Project = {
   id: string;
   name: string;
   color: string;
+  order?: number;
 };
 
 export type TimeEntry = {

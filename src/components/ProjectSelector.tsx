@@ -7,12 +7,13 @@ interface Props {
   selectedProjectId: string | null;
   onChange: (id: string | null) => void;
   onAddProject?: (name: string, color: string) => void;
+  onReorder?: (draggedId: string, targetId: string) => void;
   compact?: boolean;
 }
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#ec4899', '#06b6d4'];
 
-export function ProjectSelector({ projects, selectedProjectId, onChange, onAddProject, compact = false }: Props) {
+export function ProjectSelector({ projects, selectedProjectId, onChange, onAddProject, onReorder, compact = false }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const selected = projects.find(p => p.id === selectedProjectId);
@@ -43,6 +44,28 @@ export function ProjectSelector({ projects, selectedProjectId, onChange, onAddPr
       onAddProject(searchQuery.trim(), randomColor);
       setIsOpen(false);
     }
+  };
+
+  const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
+
+  const handleDragStart = (e: React.DragEvent, id: string) => {
+    setDraggedProjectId(id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (!draggedProjectId || draggedProjectId === targetId) return;
+    
+    if (onReorder) {
+      onReorder(draggedProjectId, targetId);
+    }
+    setDraggedProjectId(null);
   };
 
   return (
@@ -90,14 +113,22 @@ export function ProjectSelector({ projects, selectedProjectId, onChange, onAddPr
             </button>
             <div className="h-px bg-gray-100 my-1"></div>
             {filteredProjects.map(p => (
-              <button 
-                key={p.id} 
-                onClick={() => { onChange(p.id); setIsOpen(false); }} 
-                className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 rounded flex items-center gap-2 text-gray-800"
+              <div 
+                key={p.id}
+                draggable={!!onReorder && searchQuery === ''}
+                onDragStart={(e) => handleDragStart(e, p.id)}
+                onDragOver={handleDragOver}
+                onDrop={(e) => handleDrop(e, p.id)}
+                className={`${draggedProjectId === p.id ? 'opacity-50' : ''}`}
               >
-                <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }}></span>
-                <span className="truncate">{p.name}</span>
-              </button>
+                <button 
+                  onClick={() => { onChange(p.id); setIsOpen(false); }} 
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-100 rounded flex items-center gap-2 text-gray-800 ${!!onReorder && searchQuery === '' ? 'cursor-move' : ''}`}
+                >
+                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }}></span>
+                  <span className="truncate">{p.name}</span>
+                </button>
+              </div>
             ))}
             {showCreateOption && onAddProject && (
               <button 
