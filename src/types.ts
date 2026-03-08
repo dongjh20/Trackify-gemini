@@ -12,6 +12,11 @@ export type TimeEntry = {
   endTime: number;
   duration: number;
   userId: string;
+  deletedAt?: number;
+};
+
+export type DeletedEntry = TimeEntry & {
+  deletedAt: number;
 };
 
 export type ActiveTimer = {
@@ -24,6 +29,7 @@ export type ActiveTimer = {
   isActive: boolean;
   userId: string;
   isIdle?: boolean;
+  currentSegmentStartTime?: number;
   resumeTo?: {
     description: string;
     projectId: string | null;

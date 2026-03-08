@@ -1,20 +1,21 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut, Mail, Lock } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut, Mail, Lock, RotateCcw, Trash } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where, getDocs } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where, getDocs, orderBy, limit, deleteField } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword, createUserWithEmailAndPassword, deleteUser, sendEmailVerification } from 'firebase/auth';
 import { db, auth, googleProvider } from './firebase';
-import { Project, TimeEntry, ActiveTimer } from './types';
-import { formatDuration, formatTime, formatDateStr, groupByDay, fillGapsWithIdle } from './utils';
+import { Project, TimeEntry, ActiveTimer, DeletedEntry } from './types';
+import { formatDuration, formatTime, formatDateStr, groupByDay } from './utils';
 import { ProjectSelector } from './components/ProjectSelector';
 import { TimerDisplay } from './components/TimerDisplay';
 
-type View = 'tracker' | 'projects' | 'reports' | 'settings';
+type View = 'tracker' | 'projects' | 'reports' | 'settings' | 'recycle-bin';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<View>('tracker');
   const [projects, setProjects] = useState<Project[]>([]);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [deletedEntries, setDeletedEntries] = useState<DeletedEntry[]>([]);
   const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
@@ -24,6 +25,9 @@ export default function App() {
   const [draftProjectId, setDraftProjectId] = useState<string | null>(null);
   
   const [isCompactMode, setIsCompactMode] = useState(false);
+  const [autoStopOnLock, setAutoStopOnLock] = useState(() => {
+    return localStorage.getItem('autoStopOnLock') === 'true';
+  });
   const [expandedReportProjects, setExpandedReportProjects] = useState<string[]>([]);
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
   const [isAddingProject, setIsAddingProject] = useState(false);
@@ -42,8 +46,6 @@ export default function App() {
   const [isCheckingVerification, setIsCheckingVerification] = useState(false);
   const [reportTimeRange, setReportTimeRange] = useState<'day' | 'week' | 'month' | 'year'>('week');
   const [reportView, setReportView] = useState<'stats' | 'timeline'>('stats');
-
-  const idleProject = projects.find(p => p.name.toLowerCase() === 'idle');
 
   const filteredReportEntries = useMemo(() => {
     const now = new Date();
@@ -65,9 +67,8 @@ export default function App() {
         break;
     }
     
-    const baseEntries = entries.filter(e => e.startTime >= startTimeLimit);
-    return fillGapsWithIdle(baseEntries, idleProject);
-  }, [entries, reportTimeRange, idleProject]);
+    return entries.filter(e => e.startTime >= startTimeLimit);
+  }, [entries, reportTimeRange]);
 
   // Delete Account Modal State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -103,10 +104,20 @@ export default function App() {
     const qEntries = query(collection(db, 'entries'), where('userId', '==', user.uid));
     const unsubscribeEntries = onSnapshot(qEntries, (snapshot) => {
       const ents: TimeEntry[] = [];
-      snapshot.forEach(doc => ents.push({ id: doc.id, ...doc.data() } as TimeEntry));
+      const deleted: DeletedEntry[] = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.deletedAt) {
+          deleted.push({ id: doc.id, ...data } as DeletedEntry);
+        } else {
+          ents.push({ id: doc.id, ...data } as TimeEntry);
+        }
+      });
       // Sort entries by startTime descending
       ents.sort((a, b) => b.startTime - a.startTime);
+      deleted.sort((a, b) => b.deletedAt - a.deletedAt);
       setEntries(ents);
+      setDeletedEntries(deleted);
     }, (error) => console.error("Entries error:", error));
 
     const timerRef = doc(db, 'activeTimers', user.uid);
@@ -134,6 +145,38 @@ export default function App() {
     };
   }, [user]);
 
+  // Cleanup old deleted entries (older than 2 days)
+  useEffect(() => {
+    if (!user) return;
+    
+    const cleanup = async () => {
+      try {
+        const twoDaysAgo = Date.now() - 2 * 24 * 60 * 60 * 1000;
+        const q = query(
+          collection(db, 'entries'), 
+          where('userId', '==', user.uid)
+        );
+        const snapshot = await getDocs(q);
+        if (snapshot.empty) return;
+        
+        const toDelete = snapshot.docs.filter(doc => {
+          const data = doc.data();
+          return data.deletedAt && data.deletedAt < twoDaysAgo;
+        });
+        
+        if (toDelete.length === 0) return;
+        
+        const deletePromises = toDelete.map(doc => deleteDoc(doc.ref));
+        await Promise.all(deletePromises);
+        console.log(`Cleaned up ${deletePromises.length} expired recycle bin entries.`);
+      } catch (error) {
+        console.error("Cleanup error:", error);
+      }
+    };
+    
+    cleanup();
+  }, [user]);
+
   const toggleReportProject = (id: string) => {
     setExpandedReportProjects(prev =>
       prev.includes(id) ? prev.filter(pId => pId !== id) : [...prev, id]
@@ -159,27 +202,89 @@ export default function App() {
   };
 
   const handleDeleteProject = async (id: string) => {
-    await deleteDoc(doc(db, 'projects', id));
-    // Delete all entries that used this project
-    const deletionPromises = entries
-      .filter(e => e.projectId === id)
-      .map(e => deleteDoc(doc(db, 'entries', e.id)));
-    await Promise.all(deletionPromises);
-    
-    if (draftProjectId === id) setDraftProjectId(null);
-    if (activeTimer?.projectId === id) updateActiveTimer({ projectId: null });
+    try {
+      // Move entries to recycle bin first
+      const projectEntries = entries.filter(e => e.projectId === id);
+      const now = Date.now();
+      
+      const recyclePromises = projectEntries.map(e => {
+        return updateDoc(doc(db, 'entries', e.id), { deletedAt: now });
+      });
+      await Promise.all(recyclePromises);
+
+      // Finally delete the project
+      await deleteDoc(doc(db, 'projects', id));
+      
+      if (draftProjectId === id) setDraftProjectId(null);
+      if (activeTimer?.projectId === id) updateActiveTimer({ projectId: null });
+    } catch (error) {
+      console.error("Error deleting project:", error);
+      alert("Failed to delete project.");
+    }
   };
 
   const handleDeleteEntry = async (id: string) => {
-    await deleteDoc(doc(db, 'entries', id));
+    const entry = entries.find(e => e.id === id);
+    if (!entry || !user) return;
+
+    try {
+      await updateDoc(doc(db, 'entries', id), { deletedAt: Date.now() });
+    } catch (error) {
+      console.error("Error moving to recycle bin:", error);
+      alert("Failed to delete entry.");
+    }
+  };
+
+  const handleRestoreEntry = async (id: string) => {
+    const deletedEntry = deletedEntries.find(e => e.id === id);
+    if (!deletedEntry || !user) return;
+
+    try {
+      await updateDoc(doc(db, 'entries', id), { deletedAt: deleteField() });
+    } catch (error) {
+      console.error("Error restoring entry:", error);
+      alert("Failed to restore entry.");
+    }
+  };
+
+  const handlePermanentDeleteEntry = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'entries', id));
+    } catch (error) {
+      console.error("Error permanently deleting entry:", error);
+      alert("Failed to delete entry permanently.");
+    }
   };
 
   const handleStart = async () => {
     if (activeTimer || !user) return;
+    const now = Date.now();
+
+    // Record Idle (Stopped) if there's a gap since the last recorded entry
+    if (entries.length > 0) {
+      const latestEndTime = Math.max(...entries.map(e => e.endTime));
+      if (latestEndTime > 0 && latestEndTime < now) {
+        const idleDuration = now - latestEndTime;
+        if (idleDuration > 1000 && idleDuration < 12 * 60 * 60 * 1000) { // Only record if gap is > 1 second and < 12 hours
+          const idleEntryRef = doc(collection(db, 'entries'));
+          await setDoc(idleEntryRef, {
+            id: idleEntryRef.id,
+            description: 'Idle (Stopped)',
+            projectId: null,
+            startTime: latestEndTime,
+            endTime: now,
+            duration: idleDuration,
+            userId: user.uid
+          });
+        }
+      }
+    }
+
     const newTimer = {
       description: draftDescription,
       projectId: draftProjectId,
-      startTime: Date.now(),
+      startTime: now,
+      currentSegmentStartTime: now,
       totalPausedTime: 0,
       lastPauseTime: null,
       isPaused: false,
@@ -193,9 +298,28 @@ export default function App() {
 
   const handlePause = async () => {
     if (activeTimer && !activeTimer.isPaused && user) {
+      const now = Date.now();
+      const segmentStartTime = activeTimer.currentSegmentStartTime || activeTimer.startTime;
+      const duration = now - segmentStartTime;
+
+      // Record the work segment up to now
+      if (duration > 0) {
+        const workEntryRef = doc(collection(db, 'entries'));
+        await setDoc(workEntryRef, {
+          id: workEntryRef.id,
+          description: activeTimer.description,
+          projectId: activeTimer.projectId,
+          startTime: segmentStartTime,
+          endTime: now,
+          duration: duration,
+          userId: user.uid
+        });
+      }
+
       await updateDoc(doc(db, 'activeTimers', user.uid), {
         isPaused: true,
-        lastPauseTime: Date.now(),
+        lastPauseTime: now,
+        currentSegmentStartTime: null
       });
     }
   };
@@ -205,23 +329,26 @@ export default function App() {
       const now = Date.now();
       const pauseDuration = now - activeTimer.lastPauseTime;
       
-      // 1. Record the pause as an Idle entry
-      const idleEntryRef = doc(collection(db, 'entries'));
-      await setDoc(idleEntryRef, {
-        id: idleEntryRef.id,
-        description: 'Idle (Pause)',
-        projectId: idleProject?.id || null,
-        startTime: activeTimer.lastPauseTime,
-        endTime: now,
-        duration: pauseDuration,
-        userId: user.uid
-      });
+      // 1. Record the pause as an entry with no project
+      if (pauseDuration > 0) {
+        const idleEntryRef = doc(collection(db, 'entries'));
+        await setDoc(idleEntryRef, {
+          id: idleEntryRef.id,
+          description: 'Idle (Paused)',
+          projectId: null,
+          startTime: activeTimer.lastPauseTime,
+          endTime: now,
+          duration: pauseDuration,
+          userId: user.uid
+        });
+      }
 
       // 2. Resume the main timer
       await updateDoc(doc(db, 'activeTimers', user.uid), {
         isPaused: false,
         totalPausedTime: activeTimer.totalPausedTime + pauseDuration,
         lastPauseTime: null,
+        currentSegmentStartTime: now
       });
     }
   };
@@ -231,35 +358,41 @@ export default function App() {
       try {
         const endTime = Date.now();
         
-        // If stopped while paused, we should also record the final pause segment
+        // If stopped while paused, we should record the final pause segment
         if (activeTimer.isPaused && activeTimer.lastPauseTime) {
           const pauseDuration = endTime - activeTimer.lastPauseTime;
-          const idleEntryRef = doc(collection(db, 'entries'));
-          await setDoc(idleEntryRef, {
-            id: idleEntryRef.id,
-            description: 'Idle (Pause)',
-            projectId: idleProject?.id || null,
-            startTime: activeTimer.lastPauseTime,
-            endTime: endTime,
-            duration: pauseDuration,
-            userId: user.uid
-          });
+          if (pauseDuration > 0) {
+            const idleEntryRef = doc(collection(db, 'entries'));
+            await setDoc(idleEntryRef, {
+              id: idleEntryRef.id,
+              description: 'Idle (Paused)',
+              projectId: null,
+              startTime: activeTimer.lastPauseTime,
+              endTime: endTime,
+              duration: pauseDuration,
+              userId: user.uid
+            });
+          }
+        } else {
+          // If stopped while active, record the final work segment
+          const segmentStartTime = activeTimer.currentSegmentStartTime || activeTimer.startTime;
+          const duration = endTime - segmentStartTime;
+          
+          if (duration > 0) {
+            const newEntryRef = doc(collection(db, 'entries'));
+            const newEntry: TimeEntry = {
+              id: newEntryRef.id,
+              description: activeTimer.description,
+              projectId: activeTimer.projectId,
+              startTime: segmentStartTime,
+              endTime: endTime,
+              duration: duration,
+              userId: user.uid
+            };
+            await setDoc(newEntryRef, newEntry);
+          }
         }
-
-        const finalDuration = endTime - activeTimer.startTime - activeTimer.totalPausedTime - (activeTimer.isPaused && activeTimer.lastPauseTime ? (endTime - activeTimer.lastPauseTime) : 0);
         
-        const newEntryRef = doc(collection(db, 'entries'));
-        const newEntry: TimeEntry = {
-          id: newEntryRef.id,
-          description: activeTimer.description,
-          projectId: activeTimer.projectId,
-          startTime: activeTimer.startTime,
-          endTime: endTime,
-          duration: finalDuration,
-          userId: user.uid
-        };
-        
-        await setDoc(newEntryRef, newEntry);
         await deleteDoc(doc(db, 'activeTimers', user.uid));
         setDraftProjectId(activeTimer.projectId);
       } catch (error) {
@@ -268,6 +401,54 @@ export default function App() {
       }
     }
   };
+
+  const handleStopRef = useRef(handleStop);
+  useEffect(() => {
+    handleStopRef.current = handleStop;
+  });
+
+  useEffect(() => {
+    if (!autoStopOnLock || !user || !activeTimer || activeTimer.isPaused) return;
+    
+    let controller = new AbortController();
+    let isMounted = true;
+
+    const setupIdleDetector = async () => {
+      if (!('IdleDetector' in window)) return;
+      
+      try {
+        const state = await (window as any).IdleDetector.requestPermission();
+        if (state !== 'granted') {
+          if (isMounted) {
+            setAutoStopOnLock(false);
+            localStorage.setItem('autoStopOnLock', 'false');
+          }
+          return;
+        }
+
+        const detector = new (window as any).IdleDetector();
+        detector.addEventListener('change', () => {
+          if (detector.screenState === 'locked') {
+            handleStopRef.current();
+          }
+        });
+
+        await detector.start({
+          threshold: 60000,
+          signal: controller.signal
+        });
+      } catch (err) {
+        console.error('IdleDetector error:', err);
+      }
+    };
+
+    setupIdleDetector();
+
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
+  }, [autoStopOnLock, user, activeTimer?.id, activeTimer?.isPaused]);
 
   const updateActiveTimer = async (updates: Partial<ActiveTimer>) => {
     if (activeTimer && user) {
@@ -345,25 +526,9 @@ export default function App() {
     }
   };
 
-  // Ensure Idle project exists
-  useEffect(() => {
-    if (!user || isLoading) return;
-    // Wait for projects to be loaded if they exist
-    if (projects.length === 0) {
-      // We might need to wait a bit or check if we actually have NO projects
-      // For now, let's just check if projects are loaded
-      return;
-    }
-    const hasIdle = projects.some(p => p.name.toLowerCase() === 'idle');
-    if (!hasIdle) {
-      handleAddProject('Idle', '#94a3b8');
-    }
-  }, [user, projects, isLoading]);
-
   const groupedEntries = useMemo(() => {
-    const filled = fillGapsWithIdle(entries, idleProject);
-    return groupByDay(filled);
-  }, [entries, idleProject]);
+    return groupByDay(entries);
+  }, [entries]);
 
   if (isLoading) {
     return (
@@ -652,6 +817,12 @@ export default function App() {
             <BarChart2 size={18} /> Reports
           </button>
           <button 
+            onClick={() => setCurrentView('recycle-bin')}
+            className={`flex items-center gap-3 px-3 py-2 rounded-lg font-medium transition-colors ${currentView === 'recycle-bin' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+          >
+            <RotateCcw size={18} /> Recycle Bin
+          </button>
+          <button 
             onClick={() => setCurrentView('settings')}
             className={`flex items-center gap-3 px-3 py-2 rounded-lg font-medium transition-colors ${currentView === 'settings' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
           >
@@ -761,7 +932,9 @@ export default function App() {
                       <div key={date} className="flex flex-col gap-2">
                         <div className="flex items-center justify-between px-2 text-sm text-gray-500 font-medium">
                           <span>{formatDateStr(date)}</span>
-                          <span>Total: {formatDuration(dayTotal)}</span>
+                          <span className="flex items-center gap-3">
+                            <span>Total: {formatDuration(dayTotal)}</span>
+                          </span>
                         </div>
                         
                         <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
@@ -1495,7 +1668,7 @@ export default function App() {
                     </div>
                     <div className="p-6">
                       <div className="relative border-l-2 border-gray-100 ml-4 pl-8 flex flex-col gap-6">
-                        {dayEntries.sort((a, b) => a.startTime - b.startTime).map((entry, idx) => {
+                        {dayEntries.sort((a, b) => b.startTime - a.startTime).map((entry, idx) => {
                           const project = projects.find(p => p.id === entry.projectId);
                           return (
                             <div key={entry.id} className="relative">
@@ -1578,6 +1751,52 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+                <div className="p-6 border-b border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-1">App Preferences</h3>
+                  <p className="text-sm text-gray-500 mb-4">Customize how the tracker behaves.</p>
+                  
+                  <div className="flex items-center justify-between py-2">
+                    <div>
+                      <div className="font-medium text-gray-800">Auto-stop on screen lock</div>
+                      <div className="text-sm text-gray-500">Automatically stop the active timer when your computer screen locks. (Requires browser permission, supported on Chromium browsers only)</div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        className="sr-only peer" 
+                        checked={autoStopOnLock}
+                        onChange={async (e) => {
+                          const checked = e.target.checked;
+                          if (checked) {
+                            if ('IdleDetector' in window) {
+                              try {
+                                const state = await (window as any).IdleDetector.requestPermission();
+                                if (state === 'granted') {
+                                  setAutoStopOnLock(true);
+                                  localStorage.setItem('autoStopOnLock', 'true');
+                                } else {
+                                  alert('Permission to detect idle state was denied. Please enable it in your browser settings.');
+                                }
+                              } catch (err) {
+                                console.error('Error requesting IdleDetector permission:', err);
+                                alert('Failed to request permission. Ensure you are using a supported browser.');
+                              }
+                            } else {
+                              alert('Your browser does not support the Idle Detection API. Please use Chrome or Edge.');
+                            }
+                          } else {
+                            setAutoStopOnLock(false);
+                            localStorage.setItem('autoStopOnLock', 'false');
+                          }
+                        }}
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
               <div className="bg-white rounded-xl shadow-sm border border-red-200 overflow-hidden">
                 <div className="p-6 border-b border-red-100">
                   <h3 className="text-lg font-semibold text-red-600 mb-1">Danger Zone</h3>
@@ -1596,6 +1815,76 @@ export default function App() {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {currentView === 'recycle-bin' && (
+          <div className="flex-1 overflow-y-auto p-6 pb-32 bg-gray-50">
+            <div className="max-w-5xl mx-auto flex flex-col gap-6">
+              <div className="flex items-center justify-between">
+                <h1 className="text-2xl font-bold text-gray-800">Recycle Bin</h1>
+                <div className="text-sm text-gray-500 bg-blue-50 px-3 py-1 rounded-full border border-blue-100">
+                  Entries are kept for 2 days
+                </div>
+              </div>
+
+              {deletedEntries.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-gray-400 bg-white rounded-xl border border-dashed border-gray-300">
+                  <RotateCcw size={48} className="mb-4 opacity-20" />
+                  <p className="text-lg">Recycle bin is empty</p>
+                  <p className="text-sm">Deleted entries will appear here for 2 days</p>
+                </div>
+              ) : (
+                <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
+                  {deletedEntries.map((entry, index) => {
+                    const project = projects.find(p => p.id === entry.projectId);
+                    const deletedDate = new Date(entry.deletedAt);
+
+                    return (
+                      <div key={entry.id} className={`flex flex-col md:flex-row md:items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== deletedEntries.length - 1 ? 'border-b border-gray-100' : ''}`}>
+                        <div className="flex flex-col gap-1 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className={`font-medium ${!entry.description ? 'text-gray-400 italic' : 'text-gray-800'}`}>
+                              {entry.description || '(no description)'}
+                            </span>
+                            {project && (
+                              <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider" style={{ backgroundColor: `${project.color}15`, color: project.color }}>
+                                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: project.color }}></span>
+                                {project.name}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500 flex items-center gap-3">
+                            <span>{formatDateStr(new Date(entry.startTime).toISOString().split('T')[0])}</span>
+                            <span>{formatTime(entry.startTime)} - {formatTime(entry.endTime)}</span>
+                            <span className="font-mono">{formatDuration(entry.duration)}</span>
+                          </div>
+                          <div className="text-[10px] text-red-500 font-medium mt-1">
+                            Deleted on: {deletedDate.toLocaleString()}
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-2 mt-3 md:mt-0">
+                          <button 
+                            onClick={() => handleRestoreEntry(entry.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-md text-sm font-medium hover:bg-blue-100 transition-colors"
+                          >
+                            <RotateCcw size={14} /> Restore
+                          </button>
+                          <button 
+                            onClick={() => handlePermanentDeleteEntry(entry.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-md text-sm font-medium hover:bg-red-100 transition-colors"
+                            title="Delete Permanently"
+                          >
+                            <Trash size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1623,6 +1912,13 @@ export default function App() {
         >
           <BarChart2 size={20} />
           <span className="text-[10px] font-medium mt-1">Reports</span>
+        </button>
+        <button 
+          onClick={() => setCurrentView('recycle-bin')} 
+          className={`flex flex-col items-center justify-center w-full h-full ${currentView === 'recycle-bin' ? 'text-blue-600' : 'text-gray-500'}`}
+        >
+          <RotateCcw size={20} />
+          <span className="text-[10px] font-medium mt-1">Recycle</span>
         </button>
         <button 
           onClick={() => setCurrentView('settings')} 
