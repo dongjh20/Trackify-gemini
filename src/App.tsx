@@ -1222,7 +1222,7 @@ export default function App() {
                       };
 
                       return chartData.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                           <PieChart>
                             <Pie
                               data={chartData}
@@ -1328,7 +1328,7 @@ export default function App() {
                           return (
                             <>
                               <div className="h-56 flex-shrink-0 mb-2">
-                                <ResponsiveContainer width="100%" height="100%">
+                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                                   <PieChart>
                                     <Pie
                                       data={drillDownData}
@@ -1412,7 +1412,7 @@ export default function App() {
                       };
 
                       return chartData.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                           <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                             <XAxis 
@@ -1499,7 +1499,7 @@ export default function App() {
                           return (
                             <>
                               <div className="h-56 flex-shrink-0 mb-2">
-                                <ResponsiveContainer width="100%" height="100%">
+                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                                   <BarChart data={drillDownData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                                     <XAxis 
