@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut, Mail, Lock, RotateCcw, Trash } from 'lucide-react';
+import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut, Mail, Lock, RotateCcw, Trash, Upload, Download, Image as ImageIcon } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where, getDocs, orderBy, limit, deleteField } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword, createUserWithEmailAndPassword, deleteUser, sendEmailVerification } from 'firebase/auth';
@@ -8,6 +8,17 @@ import { Project, TimeEntry, ActiveTimer, DeletedEntry } from './types';
 import { formatDuration, formatTime, formatDateStr, groupByDay } from './utils';
 import { ProjectSelector } from './components/ProjectSelector';
 import { TimerDisplay } from './components/TimerDisplay';
+import { EditEntryModal } from './components/EditEntryModal';
+
+const updateFavicon = (url: string) => {
+  let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement;
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+  link.href = url;
+};
 
 type View = 'tracker' | 'projects' | 'reports' | 'settings' | 'recycle-bin';
 
@@ -19,6 +30,8 @@ export default function App() {
   const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
+  const [userAvatar, setUserAvatar] = useState<string | null>(null);
+  const [appIcon, setAppIcon] = useState<string | null>(null);
   
   // Draft state for when timer is NOT running
   const [draftDescription, setDraftDescription] = useState('');
@@ -30,6 +43,7 @@ export default function App() {
   });
   const [expandedReportProjects, setExpandedReportProjects] = useState<string[]>([]);
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
+  const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null);
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [selectedChartProject, setSelectedChartProject] = useState<string | null>(null);
@@ -85,6 +99,20 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setIsEmailVerified(currentUser?.emailVerified || false);
+      if (currentUser) {
+        const savedAvatar = localStorage.getItem(`avatar_${currentUser.uid}`);
+        if (savedAvatar) setUserAvatar(savedAvatar);
+        
+        const savedAppIcon = localStorage.getItem(`appIcon_${currentUser.uid}`);
+        if (savedAppIcon) {
+          setAppIcon(savedAppIcon);
+          updateFavicon(savedAppIcon);
+        }
+      } else {
+        setUserAvatar(null);
+        setAppIcon(null);
+        updateFavicon('/icon.svg');
+      }
       if (!currentUser) setIsLoading(false);
     });
     return () => unsubscribe();
@@ -220,6 +248,102 @@ export default function App() {
     } catch (error) {
       console.error("Error deleting project:", error);
       alert("Failed to delete project.");
+    }
+  };
+
+  const handleRenameProject = async (id: string, currentName: string) => {
+    const newName = window.prompt("Enter new project name:", currentName);
+    if (newName && newName.trim() !== "" && newName.trim() !== currentName) {
+      try {
+        await updateDoc(doc(db, 'projects', id), { name: newName.trim() });
+      } catch (error) {
+        console.error("Error renaming project:", error);
+        alert("Failed to rename project.");
+      }
+    }
+  };
+
+  const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      setUserAvatar(base64);
+      localStorage.setItem(`avatar_${user.uid}`, base64);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleAppIconUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      setAppIcon(base64);
+      localStorage.setItem(`appIcon_${user.uid}`, base64);
+      updateFavicon(base64);
+      alert("App icon updated! Note: For installed PWAs, you may need to reinstall the app to see the taskbar icon change.");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleExport = () => {
+    const dataStr = JSON.stringify(entries, null, 2);
+    const blob = new Blob([dataStr], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `time-tracker-backup-${formatDateStr(new Date().toISOString().split('T')[0])}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const importedEntries = JSON.parse(event.target?.result as string);
+        if (!Array.isArray(importedEntries)) throw new Error("Invalid format");
+        let importCount = 0;
+        for (const entry of importedEntries) {
+          if (entry.id && entry.startTime && entry.duration) {
+            await setDoc(doc(db, 'entries', entry.id), {
+              ...entry,
+              userId: user.uid
+            });
+            importCount++;
+          }
+        }
+        alert(`Successfully imported ${importCount} entries!`);
+      } catch (err) {
+        alert("Failed to import. Please ensure it's a valid JSON backup file.");
+      }
+    };
+    reader.readAsText(file);
+    // Reset input so the same file can be selected again
+    e.target.value = '';
+  };
+
+  const handleEditEntrySave = async (id: string, updates: Partial<TimeEntry>) => {
+    try {
+      if (id === 'new') {
+        const newEntryRef = doc(collection(db, 'entries'));
+        await setDoc(newEntryRef, {
+          id: newEntryRef.id,
+          userId: user?.uid,
+          ...updates
+        });
+      } else {
+        await updateDoc(doc(db, 'entries', id), updates);
+      }
+      setEditingEntry(null);
+    } catch (error) {
+      console.error("Error saving entry:", error);
+      alert("Failed to save entry.");
     }
   };
 
@@ -759,9 +883,29 @@ export default function App() {
                 
                 <div className="flex items-center gap-2">
                   {!activeTimer ? (
-                    <button onClick={handleStart} className="w-10 h-10 rounded-full bg-blue-500 hover:bg-blue-600 text-white flex items-center justify-center shadow-md transition-transform hover:scale-105">
-                      <Play size={18} className="ml-1" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button onClick={handleStart} className="w-10 h-10 rounded-full bg-blue-500 hover:bg-blue-600 text-white flex items-center justify-center shadow-md transition-transform hover:scale-105">
+                        <Play size={18} className="ml-1" />
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const now = Date.now();
+                          setEditingEntry({
+                            id: 'new',
+                            userId: user?.uid || '',
+                            description: draftDescription,
+                            projectId: draftProjectId,
+                            startTime: now - 3600000,
+                            endTime: now,
+                            duration: 3600000
+                          });
+                        }} 
+                        className="w-10 h-10 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center shadow-sm transition-transform hover:scale-105"
+                        title="Add Manual Entry"
+                      >
+                        <Plus size={18} />
+                      </button>
+                    </div>
                   ) : (
                     <>
                       {activeTimer.isPaused ? (
@@ -881,9 +1025,29 @@ export default function App() {
                     
                     <div className="flex items-center gap-2">
                       {!activeTimer ? (
-                        <button onClick={handleStart} className="w-20 md:w-24 h-10 rounded bg-blue-500 hover:bg-blue-600 text-white font-medium flex items-center justify-center transition-colors cursor-pointer">
-                          START
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button onClick={handleStart} className="w-20 md:w-24 h-10 rounded bg-blue-500 hover:bg-blue-600 text-white font-medium flex items-center justify-center transition-colors cursor-pointer">
+                            START
+                          </button>
+                          <button 
+                            onClick={() => {
+                              const now = Date.now();
+                              setEditingEntry({
+                                id: 'new',
+                                userId: user?.uid || '',
+                                description: draftDescription,
+                                projectId: draftProjectId,
+                                startTime: now - 3600000, // Default 1 hour ago
+                                endTime: now,
+                                duration: 3600000
+                              });
+                            }} 
+                            className="w-10 h-10 rounded bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors cursor-pointer"
+                            title="Add Manual Entry"
+                          >
+                            <Plus size={20} />
+                          </button>
+                        </div>
                       ) : (
                         <div className="flex items-center gap-2">
                           {activeTimer.isPaused ? (
@@ -974,6 +1138,16 @@ export default function App() {
                                       </button>
                                       {openDropdownId === entry.id && (
                                         <div className="absolute right-0 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                                          <button 
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setEditingEntry(entry);
+                                              setOpenDropdownId(null);
+                                            }}
+                                            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                                          >
+                                            <Settings size={14} /> Edit
+                                          </button>
                                           <button 
                                             onClick={(e) => {
                                               e.stopPropagation();
@@ -1083,6 +1257,16 @@ export default function App() {
                       </button>
                       {openDropdownId === project.id && (
                         <div className="absolute right-0 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRenameProject(project.id, project.name);
+                              setOpenDropdownId(null);
+                            }}
+                            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                          >
+                            <Settings size={14} /> Rename
+                          </button>
                           <button 
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1693,7 +1877,7 @@ export default function App() {
                                   </span>
                                 </div>
                                 <div className="flex items-center gap-4">
-                                  <span className="font-mono text-sm text-gray-600 bg-gray-50 px-2 py-1 rounded">
+                                  <span className="font-mono text-sm text-gray-900 font-bold bg-gray-200 px-2 py-1 rounded shadow-sm">
                                     {formatDuration(entry.duration)}
                                   </span>
                                 </div>
@@ -1726,28 +1910,78 @@ export default function App() {
                   <h3 className="text-lg font-semibold text-gray-800 mb-1">Account Information</h3>
                   <p className="text-sm text-gray-500 mb-4">Manage your account details and preferences.</p>
                   
-                  <div className="flex items-center gap-4">
-                    {user?.photoURL ? (
-                      <img src={user.photoURL} alt={user.displayName || 'User'} className="w-16 h-16 rounded-full bg-gray-200" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="w-16 h-16 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-2xl font-bold">
-                        {(user?.displayName || user?.email || 'U').charAt(0).toUpperCase()}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className="relative group">
+                        {userAvatar ? (
+                          <img src={userAvatar} alt={user?.displayName || 'User'} className="w-16 h-16 rounded-full object-cover bg-gray-200" />
+                        ) : user?.photoURL ? (
+                          <img src={user.photoURL} alt={user.displayName || 'User'} className="w-16 h-16 rounded-full bg-gray-200" referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className="w-16 h-16 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-2xl font-bold">
+                            {(user?.displayName || user?.email || 'U').charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <label className="absolute inset-0 flex items-center justify-center bg-black/50 text-white rounded-full opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity">
+                          <ImageIcon size={20} />
+                          <input type="file" accept="image/*" className="hidden" onChange={handleAvatarUpload} />
+                        </label>
                       </div>
-                    )}
-                    <div>
-                      <div className="font-medium text-gray-800 text-lg">{user?.displayName || 'User'}</div>
-                      <div className="text-gray-500">{user?.email}</div>
+                      <div>
+                        <div className="font-medium text-gray-800 text-lg">{user?.displayName || 'User'}</div>
+                        <div className="text-gray-500">{user?.email}</div>
+                      </div>
                     </div>
+                    <button 
+                      onClick={() => signOut(auth)} 
+                      className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium transition-colors flex items-center gap-2"
+                    >
+                      <LogOut size={16} /> Sign Out
+                    </button>
                   </div>
                 </div>
                 
-                <div className="p-6 bg-gray-50 flex justify-end">
-                  <button 
-                    onClick={() => signOut(auth)} 
-                    className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium transition-colors"
-                  >
-                    Sign Out
-                  </button>
+                <div className="p-6 border-b border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-1">Data Management</h3>
+                  <p className="text-sm text-gray-500 mb-4">Export your time entries as JSON or import a backup.</p>
+                  
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <button 
+                      onClick={handleExport}
+                      className="flex items-center justify-center gap-2 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      <Download size={16} /> Export Data
+                    </button>
+                    <label className="flex items-center justify-center gap-2 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer">
+                      <Upload size={16} /> Import Data
+                      <input type="file" accept=".json" className="hidden" onChange={handleImport} />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="p-6 border-b border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-1">App Customization</h3>
+                  <p className="text-sm text-gray-500 mb-4">Customize the application icon.</p>
+                  
+                  <div className="flex items-center gap-4">
+                    <div className="relative group">
+                      {appIcon ? (
+                        <img src={appIcon} alt="App Icon" className="w-16 h-16 rounded-xl object-cover bg-gray-200 shadow-sm" />
+                      ) : (
+                        <div className="w-16 h-16 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center shadow-sm">
+                          <Clock size={32} />
+                        </div>
+                      )}
+                      <label className="absolute inset-0 flex items-center justify-center bg-black/50 text-white rounded-xl opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity">
+                        <ImageIcon size={20} />
+                        <input type="file" accept="image/*" className="hidden" onChange={handleAppIconUpload} />
+                      </label>
+                    </div>
+                    <div>
+                      <div className="font-medium text-gray-800 text-lg">Taskbar / App Icon</div>
+                      <div className="text-gray-500 text-sm">Upload a square image (e.g., 512x512)</div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1887,6 +2121,16 @@ export default function App() {
               )}
             </div>
           </div>
+        )}
+
+        {editingEntry && (
+          <EditEntryModal
+            entry={editingEntry}
+            projects={projects}
+            onSave={handleEditEntrySave}
+            onClose={() => setEditingEntry(null)}
+            onAddProject={handleAddProject}
+          />
         )}
       </main>
 
