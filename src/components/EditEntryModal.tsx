@@ -47,8 +47,8 @@ export function EditEntryModal({ entry, projects, onSave, onClose, onAddProject 
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md flex flex-col max-h-[90vh]">
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
           <h3 className="text-lg font-semibold text-gray-800">
             {entry.id === 'new' ? 'Add Manual Entry' : 'Edit Time Entry'}
           </h3>
@@ -57,7 +57,7 @@ export function EditEntryModal({ entry, projects, onSave, onClose, onAddProject 
           </button>
         </div>
         
-        <div className="p-6 flex flex-col gap-4">
+        <div className="p-6 flex flex-col gap-4 overflow-y-visible">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
             <input 
@@ -101,7 +101,7 @@ export function EditEntryModal({ entry, projects, onSave, onClose, onAddProject 
           </div>
         </div>
         
-        <div className="px-6 py-4 bg-gray-50 flex justify-end gap-3 border-t border-gray-100">
+        <div className="px-6 py-4 bg-gray-50 flex justify-end gap-3 border-t border-gray-100 rounded-b-xl flex-shrink-0">
           <button 
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"

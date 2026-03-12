@@ -492,12 +492,38 @@ export default function App() {
     if (activeTimer || !user) return;
     const now = Date.now();
 
-    // Record Idle (Stopped) if there's a gap since the last recorded entry
+    // Record Sleep or Idle (Stopped) if there's a gap since the last recorded entry
     if (entries.length > 0) {
       const latestEndTime = Math.max(...entries.map(e => e.endTime));
       if (latestEndTime > 0 && latestEndTime < now) {
-        const idleDuration = now - latestEndTime;
-        if (idleDuration > 1000 && idleDuration < 12 * 60 * 60 * 1000) { // Only record if gap is > 1 second and < 12 hours
+        const gapDuration = now - latestEndTime;
+        
+        // Define night window for the current day (12 AM to 8 AM)
+        const nightStart = new Date(now);
+        nightStart.setHours(0, 0, 0, 0);
+        const nightEnd = new Date(now);
+        nightEnd.setHours(8, 0, 0, 0);
+
+        // Check if gap is > 6 hours and crosses the night window
+        const isNightSleep = gapDuration >= 6 * 3600 * 1000 && 
+                             latestEndTime < nightEnd.getTime() && 
+                             now > nightStart.getTime();
+
+        if (isNightSleep) {
+          const sleepProjectId = projects.find(p => p.name.toLowerCase() === 'sleep')?.id;
+          if (sleepProjectId) {
+            const sleepEntryRef = doc(collection(db, 'entries'));
+            await setDoc(sleepEntryRef, {
+              id: sleepEntryRef.id,
+              description: 'night sleep',
+              projectId: sleepProjectId,
+              startTime: latestEndTime,
+              endTime: now,
+              duration: gapDuration,
+              userId: user.uid
+            });
+          }
+        } else if (gapDuration > 1000 && gapDuration < 12 * 60 * 60 * 1000) { // Only record if gap is > 1 second and < 12 hours
           const idleProjectId = await getOrCreateIdleProject();
           const idleEntryRef = doc(collection(db, 'entries'));
           await setDoc(idleEntryRef, {
@@ -506,7 +532,7 @@ export default function App() {
             projectId: idleProjectId,
             startTime: latestEndTime,
             endTime: now,
-            duration: idleDuration,
+            duration: gapDuration,
             userId: user.uid
           });
         }
@@ -562,19 +588,46 @@ export default function App() {
       const now = Date.now();
       const pauseDuration = now - activeTimer.lastPauseTime;
       
-      // 1. Record the pause as an entry with no project
+      // 1. Record the pause as an entry
       if (pauseDuration > 0) {
-        const idleProjectId = await getOrCreateIdleProject();
-        const idleEntryRef = doc(collection(db, 'entries'));
-        await setDoc(idleEntryRef, {
-          id: idleEntryRef.id,
-          description: 'Idle (Paused)',
-          projectId: idleProjectId,
-          startTime: activeTimer.lastPauseTime,
-          endTime: now,
-          duration: pauseDuration,
-          userId: user.uid
-        });
+        // Define night window for the current day (12 AM to 8 AM)
+        const nightStart = new Date(now);
+        nightStart.setHours(0, 0, 0, 0);
+        const nightEnd = new Date(now);
+        nightEnd.setHours(8, 0, 0, 0);
+
+        // Check if pause is > 6 hours and crosses the night window
+        const isNightSleep = pauseDuration >= 6 * 3600 * 1000 && 
+                             activeTimer.lastPauseTime < nightEnd.getTime() && 
+                             now > nightStart.getTime();
+
+        if (isNightSleep) {
+          const sleepProjectId = projects.find(p => p.name.toLowerCase() === 'sleep')?.id;
+          if (sleepProjectId) {
+            const sleepEntryRef = doc(collection(db, 'entries'));
+            await setDoc(sleepEntryRef, {
+              id: sleepEntryRef.id,
+              description: 'night sleep',
+              projectId: sleepProjectId,
+              startTime: activeTimer.lastPauseTime,
+              endTime: now,
+              duration: pauseDuration,
+              userId: user.uid
+            });
+          }
+        } else {
+          const idleProjectId = await getOrCreateIdleProject();
+          const idleEntryRef = doc(collection(db, 'entries'));
+          await setDoc(idleEntryRef, {
+            id: idleEntryRef.id,
+            description: 'Idle (Paused)',
+            projectId: idleProjectId,
+            startTime: activeTimer.lastPauseTime,
+            endTime: now,
+            duration: pauseDuration,
+            userId: user.uid
+          });
+        }
       }
 
       // 2. Resume the main timer
@@ -596,17 +649,44 @@ export default function App() {
         if (activeTimer.isPaused && activeTimer.lastPauseTime) {
           const pauseDuration = endTime - activeTimer.lastPauseTime;
           if (pauseDuration > 0) {
-            const idleProjectId = await getOrCreateIdleProject();
-            const idleEntryRef = doc(collection(db, 'entries'));
-            await setDoc(idleEntryRef, {
-              id: idleEntryRef.id,
-              description: 'Idle (Paused)',
-              projectId: idleProjectId,
-              startTime: activeTimer.lastPauseTime,
-              endTime: endTime,
-              duration: pauseDuration,
-              userId: user.uid
-            });
+            // Define night window for the current day (12 AM to 8 AM)
+            const nightStart = new Date(endTime);
+            nightStart.setHours(0, 0, 0, 0);
+            const nightEnd = new Date(endTime);
+            nightEnd.setHours(8, 0, 0, 0);
+
+            // Check if pause is > 6 hours and crosses the night window
+            const isNightSleep = pauseDuration >= 6 * 3600 * 1000 && 
+                                 activeTimer.lastPauseTime < nightEnd.getTime() && 
+                                 endTime > nightStart.getTime();
+
+            if (isNightSleep) {
+              const sleepProjectId = projects.find(p => p.name.toLowerCase() === 'sleep')?.id;
+              if (sleepProjectId) {
+                const sleepEntryRef = doc(collection(db, 'entries'));
+                await setDoc(sleepEntryRef, {
+                  id: sleepEntryRef.id,
+                  description: 'night sleep',
+                  projectId: sleepProjectId,
+                  startTime: activeTimer.lastPauseTime,
+                  endTime: endTime,
+                  duration: pauseDuration,
+                  userId: user.uid
+                });
+              }
+            } else {
+              const idleProjectId = await getOrCreateIdleProject();
+              const idleEntryRef = doc(collection(db, 'entries'));
+              await setDoc(idleEntryRef, {
+                id: idleEntryRef.id,
+                description: 'Idle (Paused)',
+                projectId: idleProjectId,
+                startTime: activeTimer.lastPauseTime,
+                endTime: endTime,
+                duration: pauseDuration,
+                userId: user.uid
+              });
+            }
           }
         } else {
           // If stopped while active, record the final work segment
