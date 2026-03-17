@@ -61,7 +61,7 @@ export default function App() {
   const [reportTimeRange, setReportTimeRange] = useState<'day' | 'week' | 'month' | 'year'>('week');
   const [reportView, setReportView] = useState<'stats' | 'timeline'>('stats');
 
-  const filteredReportEntries = useMemo(() => {
+  const filteredReportEntriesWithSleep = useMemo(() => {
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     
@@ -83,6 +83,13 @@ export default function App() {
     
     return entries.filter(e => e.startTime >= startTimeLimit);
   }, [entries, reportTimeRange]);
+
+  const filteredReportEntries = useMemo(() => {
+    return filteredReportEntriesWithSleep.filter(e => {
+      const project = projects.find(p => p.id === e.projectId);
+      return project?.name.toLowerCase() !== 'sleep';
+    });
+  }, [filteredReportEntriesWithSleep, projects]);
 
   // Delete Account Modal State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -444,6 +451,32 @@ export default function App() {
     }
   };
 
+  const handleContinueEntry = async (entry: TimeEntry) => {
+    if (activeTimer || !user) return;
+    
+    try {
+      // 1. Delete the entry
+      await deleteDoc(doc(db, 'entries', entry.id));
+      
+      // 2. Create an active timer with its start time
+      const newTimer: ActiveTimer = {
+        description: entry.description,
+        projectId: entry.projectId,
+        startTime: entry.startTime,
+        currentSegmentStartTime: entry.startTime,
+        isPaused: false,
+        totalPausedTime: 0,
+        lastPauseTime: null,
+        isActive: true,
+        userId: user.uid
+      };
+      await setDoc(doc(db, 'activeTimers', user.uid), newTimer);
+    } catch (error) {
+      console.error("Error continuing entry:", error);
+      alert("Failed to continue entry.");
+    }
+  };
+
   const handleDeleteEntry = async (id: string) => {
     const entry = entries.find(e => e.id === id);
     if (!entry || !user) return;
@@ -643,10 +676,11 @@ export default function App() {
   const handleStop = async () => {
     if (activeTimer && user) {
       try {
-        const endTime = Date.now();
+        let endTime = Date.now();
         
         // If stopped while paused, we should record the final pause segment
         if (activeTimer.isPaused && activeTimer.lastPauseTime) {
+          endTime = Math.max(endTime, activeTimer.lastPauseTime);
           const pauseDuration = endTime - activeTimer.lastPauseTime;
           if (pauseDuration > 0) {
             // Define night window for the current day (12 AM to 8 AM)
@@ -691,6 +725,7 @@ export default function App() {
         } else {
           // If stopped while active, record the final work segment
           const segmentStartTime = activeTimer.currentSegmentStartTime || activeTimer.startTime;
+          endTime = Math.max(endTime, segmentStartTime);
           const duration = endTime - segmentStartTime;
           
           if (duration > 0) {
@@ -727,6 +762,7 @@ export default function App() {
     
     let controller = new AbortController();
     let isMounted = true;
+    let pollInterval: NodeJS.Timeout;
 
     const setupIdleDetector = async () => {
       if (!('IdleDetector' in window)) return;
@@ -742,16 +778,28 @@ export default function App() {
         }
 
         const detector = new (window as any).IdleDetector();
-        detector.addEventListener('change', () => {
-          if (detector.screenState === 'locked') {
+        
+        let isStopping = false;
+        const checkState = () => {
+          if (detector.screenState === 'locked' && !isStopping) {
+            isStopping = true;
             handleStopRef.current();
           }
-        });
+        };
+
+        detector.addEventListener('change', checkState);
 
         await detector.start({
           threshold: 60000,
           signal: controller.signal
         });
+        
+        // Check immediately after starting
+        checkState();
+        
+        // Poll periodically in case the change event is missed by the OS
+        pollInterval = setInterval(checkState, 10000);
+
       } catch (err) {
         console.error('IdleDetector error:', err);
       }
@@ -761,6 +809,7 @@ export default function App() {
 
     return () => {
       isMounted = false;
+      if (pollInterval) clearInterval(pollInterval);
       controller.abort();
     };
   }, [autoStopOnLock, user, activeTimer?.id, activeTimer?.isPaused]);
@@ -1302,8 +1351,9 @@ export default function App() {
                   </div>
                 ) : (
                   Object.entries(groupedEntries).sort(([dateA], [dateB]) => new Date(dateB).getTime() - new Date(dateA).getTime()).map(([date, dayEntries]) => {
-                    const entries = dayEntries as TimeEntry[];
-                    const dayTotal = entries.reduce((acc, entry) => acc + entry.duration, 0);
+                    const dayEntriesList = dayEntries as TimeEntry[];
+                    const nonSleepEntries = dayEntriesList.filter(e => projects.find(p => p.id === e.projectId)?.name.toLowerCase() !== 'sleep');
+                    const dayTotal = nonSleepEntries.reduce((acc, entry) => acc + entry.duration, 0);
                     
                     return (
                       <div key={date} className="flex flex-col gap-2">
@@ -1312,7 +1362,7 @@ export default function App() {
                           <span className="flex items-center gap-3">
                             <span>
                               {(() => {
-                                const idleTime = entries.filter(e => e.description.startsWith('Idle (') || projects.find(p => p.id === e.projectId)?.name.toLowerCase() === 'idle').reduce((acc, e) => acc + e.duration, 0);
+                                const idleTime = nonSleepEntries.filter(e => e.description.startsWith('Idle (') || projects.find(p => p.id === e.projectId)?.name.toLowerCase() === 'idle').reduce((acc, e) => acc + e.duration, 0);
                                 const nonIdleTime = dayTotal - idleTime;
                                 const percentage = dayTotal > 0 ? Math.round((nonIdleTime / dayTotal) * 100) : 0;
                                 return `Total: ${formatDuration(nonIdleTime)} (${percentage}%) / ${formatDuration(dayTotal)}`;
@@ -1322,10 +1372,18 @@ export default function App() {
                         </div>
                         
                         <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                          {entries.map((entry, index) => {
+                          {dayEntriesList.map((entry, index) => {
                             const project = projects.find(p => p.id === entry.projectId);
                             return (
-                              <div key={entry.id} className={`flex flex-col md:flex-row md:items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== entries.length - 1 ? 'border-b border-gray-100' : ''}`}>
+                              <div 
+                                key={entry.id} 
+                                onDoubleClick={() => setEditingEntry(entry)}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  setOpenDropdownId(openDropdownId === entry.id ? null : entry.id);
+                                }}
+                                className={`flex flex-col md:flex-row md:items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== dayEntriesList.length - 1 ? 'border-b border-gray-100' : ''}`}
+                              >
                                 <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4 flex-1 mb-3 md:mb-0">
                                   <span className={`text-gray-800 font-medium ${!entry.description ? 'text-gray-400 italic' : ''}`}>
                                     {entry.description || '(no description)'}
@@ -1358,6 +1416,18 @@ export default function App() {
                                       </button>
                                       {openDropdownId === entry.id && (
                                         <div className="absolute right-0 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                                          {entry.id === entries[0]?.id && !activeTimer && (
+                                            <button 
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleContinueEntry(entry);
+                                                setOpenDropdownId(null);
+                                              }}
+                                              className="w-full text-left px-4 py-2 text-sm text-blue-600 hover:bg-blue-50 flex items-center gap-2"
+                                            >
+                                              <Play size={14} /> Continue
+                                            </button>
+                                          )}
                                           <button 
                                             onClick={(e) => {
                                               e.stopPropagation();
@@ -1582,13 +1652,15 @@ export default function App() {
                         const idleTime = dayEntries.filter(e => e.description.startsWith('Idle (') || projects.find(p => p.id === e.projectId)?.name.toLowerCase() === 'idle').reduce((acc, e) => acc + e.duration, 0);
                         const nonIdleTime = dayTotal - idleTime;
                         const percent = dayTotal > 0 ? Math.round((nonIdleTime / dayTotal) * 100) : 0;
+                        const nonIdleHours = (nonIdleTime / (1000 * 60 * 60)).toFixed(1);
                         return {
                           date: formatDateStr(date),
                           timestamp: new Date(date).getTime(),
                           total: dayTotal,
                           nonIdle: nonIdleTime,
                           idle: idleTime,
-                          percentStr: `${percent}%`
+                          percentStr: `${percent}%`,
+                          nonIdleHoursStr: nonIdleTime > 0 ? `${nonIdleHours}h` : ''
                         };
                       })
                       .sort((a, b) => a.timestamp - b.timestamp);
@@ -1644,7 +1716,7 @@ export default function App() {
                           <RechartsTooltip content={<CustomDailyTooltip />} cursor={{ fill: '#f3f4f6' }} />
                           <Legend wrapperStyle={{ paddingTop: '20px' }} />
                           <Bar dataKey="total" xAxisId="a" name="Total Time" fill="#e5e7eb" radius={[4, 4, 0, 0]}>
-                            <LabelList dataKey="percentStr" position="top" fill="#6b7280" fontSize={12} />
+                            <LabelList dataKey="nonIdleHoursStr" position="top" fill="#6b7280" fontSize={12} />
                           </Bar>
                           <Bar dataKey="nonIdle" xAxisId="b" name="Non-Idle Time" fill="#6366f1" radius={[4, 4, 0, 0]} />
                         </BarChart>
@@ -2152,7 +2224,7 @@ export default function App() {
             </>
           ) : (
             <div className="flex flex-col gap-8">
-              {Object.entries(groupByDay(filteredReportEntries))
+              {Object.entries(groupByDay(filteredReportEntriesWithSleep))
                 .sort(([dateA], [dateB]) => new Date(dateB).getTime() - new Date(dateA).getTime())
                 .map(([date, dayEntries]) => (
                   <div key={date} className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
@@ -2160,8 +2232,9 @@ export default function App() {
                       <h3 className="font-bold text-gray-800">{formatDateStr(date)}</h3>
                       <span className="text-sm font-mono text-gray-500">
                         {(() => {
-                          const dayTotal = dayEntries.reduce((acc, e) => acc + e.duration, 0);
-                          const idleTime = dayEntries.filter(e => e.description.startsWith('Idle (') || projects.find(p => p.id === e.projectId)?.name.toLowerCase() === 'idle').reduce((acc, e) => acc + e.duration, 0);
+                          const nonSleepEntries = dayEntries.filter(e => projects.find(p => p.id === e.projectId)?.name.toLowerCase() !== 'sleep');
+                          const dayTotal = nonSleepEntries.reduce((acc, e) => acc + e.duration, 0);
+                          const idleTime = nonSleepEntries.filter(e => e.description.startsWith('Idle (') || projects.find(p => p.id === e.projectId)?.name.toLowerCase() === 'idle').reduce((acc, e) => acc + e.duration, 0);
                           const nonIdleTime = dayTotal - idleTime;
                           const percentage = dayTotal > 0 ? Math.round((nonIdleTime / dayTotal) * 100) : 0;
                           return `Total: ${formatDuration(nonIdleTime)} (${percentage}%) / ${formatDuration(dayTotal)}`;
@@ -2207,7 +2280,7 @@ export default function App() {
                     </div>
                   </div>
                 ))}
-              {filteredReportEntries.length === 0 && (
+              {filteredReportEntriesWithSleep.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-20 text-gray-400 bg-white border border-gray-200 rounded-lg">
                   <Clock size={48} className="mb-4 opacity-20" />
                   <p className="text-lg">No data for this period</p>
