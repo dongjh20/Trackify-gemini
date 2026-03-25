@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Folder, PlusCircle, Plus } from 'lucide-react';
-import { Project } from '../types';
+import { Folder, PlusCircle, Plus, ChevronRight, ChevronDown } from 'lucide-react';
+import { Project, ProjectGroup } from '../types';
 
 interface Props {
   projects: Project[];
+  projectGroups?: ProjectGroup[];
   selectedProjectId: string | null;
   onChange: (id: string | null) => void;
   onAddProject?: (name: string, color: string) => void;
@@ -13,10 +14,11 @@ interface Props {
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#ec4899', '#06b6d4'];
 
-export function ProjectSelector({ projects, selectedProjectId, onChange, onAddProject, onReorder, compact = false }: Props) {
+export function ProjectSelector({ projects, projectGroups = [], selectedProjectId, onChange, onAddProject, onReorder, compact = false }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const selected = projects.find(p => p.id === selectedProjectId);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -31,14 +33,13 @@ export function ProjectSelector({ projects, selectedProjectId, onChange, onAddPr
     }
     
     function handleScroll(event: Event) {
-      // Don't close if scrolling inside the dropdown itself
       const target = event.target as HTMLElement;
       if (target && target.closest && target.closest('.project-dropdown-menu')) return;
       setIsOpen(false);
     }
 
     document.addEventListener("mousedown", handleClickOutside);
-    window.addEventListener("scroll", handleScroll, true); // Use capture phase to catch all scrolls
+    window.addEventListener("scroll", handleScroll, true);
     
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
@@ -51,14 +52,13 @@ export function ProjectSelector({ projects, selectedProjectId, onChange, onAddPr
       const rect = buttonRef.current.getBoundingClientRect();
       const spaceBelow = window.innerHeight - rect.bottom - 10;
       const spaceAbove = rect.top - 10;
-      const dropdownWidth = 224; // w-56 is 224px
+      const dropdownWidth = 224;
       
       let left = rect.left;
       if (left + dropdownWidth > window.innerWidth) {
         left = window.innerWidth - dropdownWidth - 10;
       }
       
-      // If there's more space below or at least 250px below, show it below
       if (spaceBelow >= 250 || spaceBelow > spaceAbove) {
         setDropdownStyle({
           position: 'fixed',
@@ -68,7 +68,6 @@ export function ProjectSelector({ projects, selectedProjectId, onChange, onAddPr
           maxHeight: Math.max(200, spaceBelow - 10) + 'px'
         });
       } else {
-        // Show above
         setDropdownStyle({
           position: 'fixed',
           bottom: window.innerHeight - rect.top + 4,
@@ -80,7 +79,7 @@ export function ProjectSelector({ projects, selectedProjectId, onChange, onAddPr
     } else {
       setSearchQuery('');
     }
-  }, [isOpen, projects.length]);
+  }, [isOpen, projects.length, projectGroups.length]);
 
   const filteredProjects = projects.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()));
   const showCreateOption = searchQuery.trim().length > 0 && !projects.some(p => p.name.toLowerCase() === searchQuery.trim().toLowerCase());
@@ -114,6 +113,33 @@ export function ProjectSelector({ projects, selectedProjectId, onChange, onAddPr
     }
     setDraggedProjectId(null);
   };
+
+  const toggleGroup = (groupId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedGroups(prev => ({
+      ...prev,
+      [groupId]: prev[groupId] === undefined ? false : !prev[groupId]
+    }));
+  };
+
+  const renderProjectItem = (p: Project, indent = false) => (
+    <div 
+      key={p.id}
+      draggable={!!onReorder && searchQuery === ''}
+      onDragStart={(e) => handleDragStart(e, p.id)}
+      onDragOver={handleDragOver}
+      onDrop={(e) => handleDrop(e, p.id)}
+      className={`${draggedProjectId === p.id ? 'opacity-50' : ''}`}
+    >
+      <button 
+        onClick={() => { onChange(p.id); setIsOpen(false); }} 
+        className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-100 rounded flex items-center gap-2 text-gray-800 ${!!onReorder && searchQuery === '' ? 'cursor-move' : ''} ${indent ? 'pl-8' : ''}`}
+      >
+        <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }}></span>
+        <span className="truncate">{p.name}</span>
+      </button>
+    </div>
+  );
 
   return (
     <div className="relative" ref={containerRef}>
@@ -163,24 +189,44 @@ export function ProjectSelector({ projects, selectedProjectId, onChange, onAddPr
               <Folder size={14} /> No project
             </button>
             <div className="h-px bg-gray-100 my-1"></div>
-            {filteredProjects.map(p => (
-              <div 
-                key={p.id}
-                draggable={!!onReorder && searchQuery === ''}
-                onDragStart={(e) => handleDragStart(e, p.id)}
-                onDragOver={handleDragOver}
-                onDrop={(e) => handleDrop(e, p.id)}
-                className={`${draggedProjectId === p.id ? 'opacity-50' : ''}`}
-              >
-                <button 
-                  onClick={() => { onChange(p.id); setIsOpen(false); }} 
-                  className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-100 rounded flex items-center gap-2 text-gray-800 ${!!onReorder && searchQuery === '' ? 'cursor-move' : ''}`}
-                >
-                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }}></span>
-                  <span className="truncate">{p.name}</span>
-                </button>
-              </div>
-            ))}
+            
+            {searchQuery ? (
+              filteredProjects.map(p => renderProjectItem(p))
+            ) : (
+              <>
+                {projectGroups.map(group => {
+                  const groupProjects = projects.filter(p => p.groupId === group.id);
+                  const isExpanded = expandedGroups[group.id] ?? group.isExpanded ?? true;
+                  
+                  if (groupProjects.length === 0) return null;
+                  
+                  return (
+                    <div key={group.id} className="mb-1">
+                      <div 
+                        className="flex items-center gap-1 px-2 py-1.5 text-xs font-semibold text-gray-500 hover:bg-gray-50 cursor-pointer rounded"
+                        onClick={(e) => toggleGroup(group.id, e)}
+                      >
+                        {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        <Folder size={12} className="text-blue-400" />
+                        <span className="truncate">{group.name}</span>
+                      </div>
+                      {isExpanded && (
+                        <div className="mt-0.5">
+                          {groupProjects.map(p => renderProjectItem(p, true))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                
+                {projectGroups.length > 0 && projects.filter(p => !p.groupId).length > 0 && (
+                  <div className="h-px bg-gray-100 my-1"></div>
+                )}
+                
+                {projects.filter(p => !p.groupId).map(p => renderProjectItem(p))}
+              </>
+            )}
+
             {showCreateOption && onAddProject && (
               <button 
                 onClick={handleCreate}

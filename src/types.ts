@@ -1,8 +1,17 @@
+export type ProjectGroup = {
+  id: string;
+  name: string;
+  userId: string;
+  order?: number;
+  isExpanded?: boolean;
+};
+
 export type Project = {
   id: string;
   name: string;
   color: string;
   order?: number;
+  groupId?: string | null;
 };
 
 export type TimeEntry = {

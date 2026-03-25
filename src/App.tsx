@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut, Mail, Lock, RotateCcw, Trash, Upload, Download, Image as ImageIcon } from 'lucide-react';
+import { Play, Pause, Square, Minimize2, Maximize2, Clock, List, BarChart2, Settings, MoreVertical, Plus, ChevronDown, ChevronRight, Trash2, LogOut, Mail, Lock, RotateCcw, Trash, Upload, Download, Image as ImageIcon, Folder } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList } from 'recharts';
 import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc, query, where, getDocs, orderBy, limit, deleteField } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword, createUserWithEmailAndPassword, deleteUser, sendEmailVerification } from 'firebase/auth';
-import { db, auth, googleProvider } from './firebase';
-import { Project, TimeEntry, ActiveTimer, DeletedEntry } from './types';
+import { db, auth, googleProvider, handleFirestoreError, OperationType } from './firebase';
+import { Project, TimeEntry, ActiveTimer, DeletedEntry, ProjectGroup } from './types';
 import { formatDuration, formatTime, formatDateStr, groupByDay } from './utils';
 import { ProjectSelector } from './components/ProjectSelector';
 import { TimerDisplay } from './components/TimerDisplay';
@@ -25,6 +25,7 @@ type View = 'tracker' | 'projects' | 'reports' | 'settings' | 'recycle-bin';
 export default function App() {
   const [currentView, setCurrentView] = useState<View>('tracker');
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [deletedEntries, setDeletedEntries] = useState<DeletedEntry[]>([]);
   const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(null);
@@ -45,7 +46,13 @@ export default function App() {
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
   const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null);
   const [isAddingProject, setIsAddingProject] = useState(false);
+  const [addingToGroupId, setAddingToGroupId] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState('');
+  const [isAddingFolder, setIsAddingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [editingFolder, setEditingFolder] = useState<ProjectGroup | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [selectedChartProject, setSelectedChartProject] = useState<string | null>(null);
   const [selectedBarProject, setSelectedBarProject] = useState<string | null>(null);
 
@@ -120,6 +127,36 @@ export default function App() {
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
+  // High-DPI Auto-Adaptation
+  useEffect(() => {
+    // Force a resize event shortly after mount to handle high-DPI screen scaling issues
+    // This simulates the window being moved or resized, forcing the browser to recalculate layout
+    const timer = setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+    }, 100);
+    
+    // Listen for DPI changes (e.g., when moving between screens)
+    const mediaQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    const handleDpiChange = () => {
+      window.dispatchEvent(new Event('resize'));
+    };
+    
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', handleDpiChange);
+    } else {
+      mediaQuery.addListener(handleDpiChange);
+    }
+
+    return () => {
+      clearTimeout(timer);
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener('change', handleDpiChange);
+      } else {
+        mediaQuery.removeListener(handleDpiChange);
+      }
+    };
+  }, []);
+
   // Firebase Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -159,7 +196,20 @@ export default function App() {
         return a.name.localeCompare(b.name);
       });
       setProjects(projs);
-    }, (error) => console.error("Projects error:", error));
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'projects'));
+
+    const qGroups = query(collection(db, 'projectGroups'), where('userId', '==', user.uid));
+    const unsubscribeGroups = onSnapshot(qGroups, (snapshot) => {
+      const groups: ProjectGroup[] = [];
+      snapshot.forEach(doc => groups.push({ id: doc.id, ...doc.data() } as ProjectGroup));
+      groups.sort((a, b) => {
+        if (a.order !== undefined && b.order !== undefined) return a.order - b.order;
+        if (a.order !== undefined) return -1;
+        if (b.order !== undefined) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      setProjectGroups(groups);
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'projectGroups'));
 
     const qEntries = query(collection(db, 'entries'), where('userId', '==', user.uid));
     const unsubscribeEntries = onSnapshot(qEntries, (snapshot) => {
@@ -178,7 +228,7 @@ export default function App() {
       deleted.sort((a, b) => b.deletedAt - a.deletedAt);
       setEntries(ents);
       setDeletedEntries(deleted);
-    }, (error) => console.error("Entries error:", error));
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'entries'));
 
     const timerRef = doc(db, 'activeTimers', user.uid);
     const unsubscribeTimer = onSnapshot(timerRef, (docSnap) => {
@@ -194,12 +244,13 @@ export default function App() {
       }
       setIsLoading(false);
     }, (error) => {
-      console.error("Timer error:", error);
+      handleFirestoreError(error, OperationType.GET, 'activeTimers');
       setIsLoading(false);
     });
 
     return () => {
       unsubscribeProjects();
+      unsubscribeGroups();
       unsubscribeEntries();
       unsubscribeTimer();
     };
@@ -230,7 +281,7 @@ export default function App() {
         await Promise.all(deletePromises);
         console.log(`Cleaned up ${deletePromises.length} expired recycle bin entries.`);
       } catch (error) {
-        console.error("Cleanup error:", error);
+        handleFirestoreError(error, OperationType.DELETE, 'entries');
       }
     };
     
@@ -258,7 +309,7 @@ export default function App() {
             console.log(`Migrated ${idleEntries.length} idle entries to Idle project.`);
           }
         } catch (error) {
-          console.error("Error migrating idle entries:", error);
+          handleFirestoreError(error, OperationType.UPDATE, 'entries');
         }
       }
     };
@@ -272,7 +323,73 @@ export default function App() {
     );
   };
 
-  const handleAddProject = async (name: string, color: string) => {
+  const handleAddFolder = async (name: string) => {
+    if (!user) return;
+    const newFolderRef = doc(collection(db, 'projectGroups'));
+    const maxOrder = projectGroups.length > 0 ? Math.max(...projectGroups.map(g => g.order || 0)) : 0;
+    const newFolder: ProjectGroup = {
+      id: newFolderRef.id,
+      name,
+      userId: user.uid,
+      order: maxOrder + 1,
+      isExpanded: true
+    };
+    try {
+      await setDoc(newFolderRef, newFolder);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'projectGroups');
+    }
+  };
+
+  const handleUpdateFolder = async (id: string, updates: Partial<ProjectGroup>) => {
+    try {
+      await updateDoc(doc(db, 'projectGroups', id), updates);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'projectGroups');
+    }
+  };
+
+  const handleDeleteFolder = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this folder? Projects inside will be moved to the root level.")) return;
+    try {
+      // Move projects to root
+      const folderProjects = projects.filter(p => p.groupId === id);
+      const movePromises = folderProjects.map(p => 
+        updateDoc(doc(db, 'projects', p.id), { groupId: null })
+      );
+      await Promise.all(movePromises);
+      
+      // Delete folder
+      await deleteDoc(doc(db, 'projectGroups', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'projectGroups');
+    }
+  };
+
+  const handleUpdateProject = async (id: string, updates: Partial<Project>) => {
+    try {
+      await updateDoc(doc(db, 'projects', id), updates);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'projects');
+    }
+  };
+
+  const handleMoveProject = async (projectId: string, targetGroupId: string | null) => {
+    try {
+      await updateDoc(doc(db, 'projects', projectId), { groupId: targetGroupId });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'projects');
+    }
+  };
+
+  const toggleFolderExpand = (folderId: string) => {
+    setExpandedFolders(prev => ({
+      ...prev,
+      [folderId]: prev[folderId] === undefined ? false : !prev[folderId]
+    }));
+  };
+
+  const handleAddProject = async (name: string, color: string, groupId?: string) => {
     if (!user) return;
     const newProjectRef = doc(collection(db, 'projects'));
     const maxOrder = projects.length > 0 ? Math.max(...projects.map(p => p.order || 0)) : 0;
@@ -280,7 +397,8 @@ export default function App() {
       id: newProjectRef.id,
       name,
       color,
-      order: maxOrder + 1
+      order: maxOrder + 1,
+      ...(groupId ? { groupId } : {})
     };
     await setDoc(newProjectRef, { ...newProject, userId: user.uid });
     
@@ -309,8 +427,7 @@ export default function App() {
       if (draftProjectId === id) setDraftProjectId(null);
       if (activeTimer?.projectId === id) updateActiveTimer({ projectId: null });
     } catch (error) {
-      console.error("Error deleting project:", error);
-      alert("Failed to delete project.");
+      handleFirestoreError(error, OperationType.DELETE, 'projects');
     }
   };
 
@@ -320,16 +437,23 @@ export default function App() {
       try {
         await updateDoc(doc(db, 'projects', id), { name: newName.trim() });
       } catch (error) {
-        console.error("Error renaming project:", error);
-        alert("Failed to rename project.");
+        handleFirestoreError(error, OperationType.UPDATE, 'projects');
       }
     }
   };
 
   const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
+  const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
 
   const handleDragStart = (e: React.DragEvent, id: string) => {
+    e.stopPropagation();
     setDraggedProjectId(id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleFolderDragStart = (e: React.DragEvent, id: string) => {
+    e.stopPropagation();
+    setDraggedFolderId(id);
     e.dataTransfer.effectAllowed = 'move';
   };
 
@@ -338,11 +462,67 @@ export default function App() {
     e.dataTransfer.dropEffect = 'move';
   };
 
-  const handleDrop = async (e: React.DragEvent, targetId: string) => {
+  const handleDrop = async (e: React.DragEvent, targetId: string, isFolder: boolean = false) => {
     e.preventDefault();
-    if (!draggedProjectId || draggedProjectId === targetId) return;
-    await handleReorderProject(draggedProjectId, targetId);
+    e.stopPropagation();
+    
+    if (draggedFolderId) {
+      if (isFolder && draggedFolderId !== targetId) {
+        await handleReorderFolder(draggedFolderId, targetId);
+      }
+      setDraggedFolderId(null);
+      return;
+    }
+
+    if (!draggedProjectId) return;
+    
+    if (isFolder) {
+      if (draggedProjectId !== targetId) {
+        await handleMoveProject(draggedProjectId, targetId);
+      }
+    } else {
+      if (draggedProjectId === targetId) return;
+      const targetProject = projects.find(p => p.id === targetId);
+      if (targetProject) {
+        // Move to the same folder as the target project
+        await updateDoc(doc(db, 'projects', draggedProjectId), { groupId: targetProject.groupId || null });
+        await handleReorderProject(draggedProjectId, targetId);
+      }
+    }
     setDraggedProjectId(null);
+  };
+
+  const handleDropToRoot = async (e: React.DragEvent) => {
+    e.preventDefault();
+    if (draggedFolderId) {
+      setDraggedFolderId(null);
+      return;
+    }
+    if (!draggedProjectId) return;
+    await handleMoveProject(draggedProjectId, null);
+    setDraggedProjectId(null);
+  };
+
+  const handleReorderFolder = async (draggedId: string, targetId: string) => {
+    if (draggedId === targetId) return;
+
+    const newGroups = [...projectGroups];
+    const draggedIndex = newGroups.findIndex(g => g.id === draggedId);
+    const targetIndex = newGroups.findIndex(g => g.id === targetId);
+
+    const [draggedGroup] = newGroups.splice(draggedIndex, 1);
+    newGroups.splice(targetIndex, 0, draggedGroup);
+
+    // Update orders optimistically or just send to DB
+    const updates = newGroups.map((g, index) => {
+      return updateDoc(doc(db, 'projectGroups', g.id), { order: index });
+    });
+
+    try {
+      await Promise.all(updates);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'projectGroups');
+    }
   };
 
   const handleReorderProject = async (draggedId: string, targetId: string) => {
@@ -363,7 +543,7 @@ export default function App() {
     try {
       await Promise.all(updates);
     } catch (error) {
-      console.error("Error updating project order:", error);
+      handleFirestoreError(error, OperationType.UPDATE, 'projects');
     }
   };
 
@@ -446,8 +626,7 @@ export default function App() {
       }
       setEditingEntry(null);
     } catch (error) {
-      console.error("Error saving entry:", error);
-      alert("Failed to save entry.");
+      handleFirestoreError(error, OperationType.WRITE, 'entries');
     }
   };
 
@@ -472,8 +651,7 @@ export default function App() {
       };
       await setDoc(doc(db, 'activeTimers', user.uid), newTimer);
     } catch (error) {
-      console.error("Error continuing entry:", error);
-      alert("Failed to continue entry.");
+      handleFirestoreError(error, OperationType.WRITE, 'activeTimers');
     }
   };
 
@@ -484,8 +662,7 @@ export default function App() {
     try {
       await updateDoc(doc(db, 'entries', id), { deletedAt: Date.now() });
     } catch (error) {
-      console.error("Error moving to recycle bin:", error);
-      alert("Failed to delete entry.");
+      handleFirestoreError(error, OperationType.UPDATE, 'entries');
     }
   };
 
@@ -496,8 +673,7 @@ export default function App() {
     try {
       await updateDoc(doc(db, 'entries', id), { deletedAt: deleteField() });
     } catch (error) {
-      console.error("Error restoring entry:", error);
-      alert("Failed to restore entry.");
+      handleFirestoreError(error, OperationType.UPDATE, 'entries');
     }
   };
 
@@ -505,8 +681,7 @@ export default function App() {
     try {
       await deleteDoc(doc(db, 'entries', id));
     } catch (error) {
-      console.error("Error permanently deleting entry:", error);
-      alert("Failed to delete entry permanently.");
+      handleFirestoreError(error, OperationType.DELETE, 'entries');
     }
   };
 
@@ -746,8 +921,7 @@ export default function App() {
         await deleteDoc(doc(db, 'activeTimers', user.uid));
         setDraftProjectId(activeTimer.projectId);
       } catch (error) {
-        console.error("Error stopping timer:", error);
-        alert("Failed to stop timer. Please try again.");
+        handleFirestoreError(error, OperationType.WRITE, 'entries/activeTimers');
       }
     }
   };
@@ -762,7 +936,6 @@ export default function App() {
     
     let controller = new AbortController();
     let isMounted = true;
-    let pollInterval: NodeJS.Timeout;
 
     const setupIdleDetector = async () => {
       if (!('IdleDetector' in window)) return;
@@ -778,16 +951,12 @@ export default function App() {
         }
 
         const detector = new (window as any).IdleDetector();
-        
-        let isStopping = false;
-        const checkState = () => {
-          if (detector.screenState === 'locked' && !isStopping) {
-            isStopping = true;
+
+        detector.addEventListener('change', () => {
+          if (detector.screenState === 'locked') {
             handleStopRef.current();
           }
-        };
-
-        detector.addEventListener('change', checkState);
+        });
 
         await detector.start({
           threshold: 60000,
@@ -795,10 +964,9 @@ export default function App() {
         });
         
         // Check immediately after starting
-        checkState();
-        
-        // Poll periodically in case the change event is missed by the OS
-        pollInterval = setInterval(checkState, 10000);
+        if (detector.screenState === 'locked') {
+          handleStopRef.current();
+        }
 
       } catch (err) {
         console.error('IdleDetector error:', err);
@@ -809,7 +977,6 @@ export default function App() {
 
     return () => {
       isMounted = false;
-      if (pollInterval) clearInterval(pollInterval);
       controller.abort();
     };
   }, [autoStopOnLock, user, activeTimer?.id, activeTimer?.isPaused]);
@@ -861,19 +1028,23 @@ export default function App() {
       setDeleteError('');
       
       // 1. Delete all entries
-      const entriesQuery = query(collection(db, 'entries'), where('userId', '==', user.uid));
-      const entriesSnapshot = await getDocs(entriesQuery);
-      const entryDeletions = entriesSnapshot.docs.map(d => deleteDoc(d.ref));
+      try {
+        const entriesQuery = query(collection(db, 'entries'), where('userId', '==', user.uid));
+        const entriesSnapshot = await getDocs(entriesQuery);
+        const entryDeletions = entriesSnapshot.docs.map(d => deleteDoc(d.ref));
 
-      // 2. Delete all projects
-      const projectsQuery = query(collection(db, 'projects'), where('userId', '==', user.uid));
-      const projectsSnapshot = await getDocs(projectsQuery);
-      const projectDeletions = projectsSnapshot.docs.map(d => deleteDoc(d.ref));
+        // 2. Delete all projects
+        const projectsQuery = query(collection(db, 'projects'), where('userId', '==', user.uid));
+        const projectsSnapshot = await getDocs(projectsQuery);
+        const projectDeletions = projectsSnapshot.docs.map(d => deleteDoc(d.ref));
 
-      // 3. Delete active timer
-      const activeTimerRef = doc(db, 'activeTimers', user.uid);
+        // 3. Delete active timer
+        const activeTimerRef = doc(db, 'activeTimers', user.uid);
 
-      await Promise.all([...entryDeletions, ...projectDeletions, deleteDoc(activeTimerRef)]);
+        await Promise.all([...entryDeletions, ...projectDeletions, deleteDoc(activeTimerRef)]);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, 'entries/projects/activeTimers');
+      }
 
       // 4. Delete user auth account
       await deleteUser(user);
@@ -1112,6 +1283,7 @@ export default function App() {
             <div className="flex items-center justify-between">
               <ProjectSelector 
                 projects={projects}
+                projectGroups={projectGroups}
                 selectedProjectId={activeTimer ? activeTimer.projectId : draftProjectId}
                 onChange={(id) => activeTimer ? updateActiveTimer({ projectId: id }) : setDraftProjectId(id)}
                 onAddProject={handleAddProject}
@@ -1264,6 +1436,7 @@ export default function App() {
                 <div className="flex items-center justify-between w-full md:w-auto gap-2 md:gap-6">
                   <ProjectSelector 
                     projects={projects}
+                    projectGroups={projectGroups}
                     selectedProjectId={activeTimer ? activeTimer.projectId : draftProjectId}
                     onChange={(id) => activeTimer ? updateActiveTimer({ projectId: id }) : setDraftProjectId(id)}
                     onAddProject={handleAddProject}
@@ -1471,13 +1644,68 @@ export default function App() {
             <div className="max-w-5xl mx-auto flex flex-col gap-6">
               <div className="flex items-center justify-between">
                 <h1 className="text-2xl font-bold text-gray-800">Projects</h1>
-                <button 
-                  onClick={() => setIsAddingProject(true)}
-                  className="flex items-center gap-2 px-3 py-2 md:px-4 md:py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors text-sm md:text-base"
-                >
-                  <Plus size={18} /> <span className="hidden sm:inline">New Project</span><span className="sm:hidden">New</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => setIsAddingFolder(true)}
+                    className="flex items-center gap-2 px-3 py-2 md:px-4 md:py-2 bg-white border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors text-sm md:text-base"
+                  >
+                    <Folder size={18} /> <span className="hidden sm:inline">New Folder</span><span className="sm:hidden">Folder</span>
+                  </button>
+                  <button 
+                    onClick={() => setIsAddingProject(true)}
+                    className="flex items-center gap-2 px-3 py-2 md:px-4 md:py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors text-sm md:text-base"
+                  >
+                    <Plus size={18} /> <span className="hidden sm:inline">New Project</span><span className="sm:hidden">Project</span>
+                  </button>
+                </div>
               </div>
+
+              {isAddingFolder && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-xl p-6 w-full max-w-sm shadow-2xl">
+                    <h2 className="text-xl font-bold text-gray-800 mb-4">New Folder</h2>
+                    <input
+                      type="text"
+                      autoFocus
+                      placeholder="Folder name"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-6"
+                      value={newFolderName}
+                      onChange={e => setNewFolderName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && newFolderName.trim()) {
+                          handleAddFolder(newFolderName.trim());
+                          setNewFolderName('');
+                          setIsAddingFolder(false);
+                        }
+                      }}
+                    />
+                    <div className="flex justify-end gap-3">
+                      <button
+                        onClick={() => {
+                          setIsAddingFolder(false);
+                          setNewFolderName('');
+                        }}
+                        className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (newFolderName.trim()) {
+                            handleAddFolder(newFolderName.trim());
+                            setNewFolderName('');
+                            setIsAddingFolder(false);
+                          }
+                        }}
+                        disabled={!newFolderName.trim()}
+                        className="px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Create
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {isAddingProject && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -1493,9 +1721,10 @@ export default function App() {
                       onKeyDown={e => {
                         if (e.key === 'Enter' && newProjectName.trim()) {
                           const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#ec4899', '#06b6d4'];
-                          handleAddProject(newProjectName.trim(), colors[Math.floor(Math.random() * colors.length)]);
+                          handleAddProject(newProjectName.trim(), colors[Math.floor(Math.random() * colors.length)], addingToGroupId || undefined);
                           setNewProjectName('');
                           setIsAddingProject(false);
+                          setAddingToGroupId(null);
                         }
                       }}
                     />
@@ -1504,6 +1733,7 @@ export default function App() {
                         onClick={() => {
                           setIsAddingProject(false);
                           setNewProjectName('');
+                          setAddingToGroupId(null);
                         }}
                         className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
                       >
@@ -1513,9 +1743,10 @@ export default function App() {
                         onClick={() => {
                           if (newProjectName.trim()) {
                             const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#ec4899', '#06b6d4'];
-                            handleAddProject(newProjectName.trim(), colors[Math.floor(Math.random() * colors.length)]);
+                            handleAddProject(newProjectName.trim(), colors[Math.floor(Math.random() * colors.length)], addingToGroupId || undefined);
                             setNewProjectName('');
                             setIsAddingProject(false);
+                            setAddingToGroupId(null);
                           }
                         }}
                         disabled={!newProjectName.trim()}
@@ -1527,19 +1758,300 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {editingProject && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-xl p-6 w-full max-w-sm shadow-2xl">
+                    <h2 className="text-xl font-bold text-gray-800 mb-4">Edit Project</h2>
+                    <div className="flex flex-col gap-4 mb-6">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          value={editingProject.name}
+                          onChange={e => setEditingProject({...editingProject, name: e.target.value})}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Color</label>
+                        <input
+                          type="color"
+                          className="w-full h-10 p-1 border border-gray-300 rounded-lg cursor-pointer"
+                          value={editingProject.color}
+                          onChange={e => setEditingProject({...editingProject, color: e.target.value})}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Folder</label>
+                        <select
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                          value={editingProject.groupId || ''}
+                          onChange={e => setEditingProject({...editingProject, groupId: e.target.value || null})}
+                        >
+                          <option value="">None (Root)</option>
+                          {projectGroups.map(g => (
+                            <option key={g.id} value={g.id}>{g.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <button
+                        onClick={() => {
+                          if (window.confirm("Are you sure you want to delete this project?")) {
+                            handleDeleteProject(editingProject.id);
+                            setEditingProject(null);
+                          }
+                        }}
+                        className="text-red-600 hover:text-red-700 font-medium text-sm flex items-center gap-1"
+                      >
+                        <Trash2 size={16} /> Delete
+                      </button>
+                      <div className="flex gap-3">
+                        <button
+                          onClick={() => setEditingProject(null)}
+                          className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (editingProject.name.trim()) {
+                              handleUpdateProject(editingProject.id, {
+                                name: editingProject.name.trim(),
+                                color: editingProject.color,
+                                groupId: editingProject.groupId
+                              });
+                              setEditingProject(null);
+                            }
+                          }}
+                          disabled={!editingProject.name.trim()}
+                          className="px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:opacity-50"
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {editingFolder && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-xl p-6 w-full max-w-sm shadow-2xl">
+                    <h2 className="text-xl font-bold text-gray-800 mb-4">Edit Folder</h2>
+                    <input
+                      type="text"
+                      autoFocus
+                      placeholder="Folder name"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-6"
+                      value={editingFolder.name}
+                      onChange={e => setEditingFolder({...editingFolder, name: e.target.value})}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && editingFolder.name.trim()) {
+                          handleUpdateFolder(editingFolder.id, { name: editingFolder.name.trim() });
+                          setEditingFolder(null);
+                        }
+                      }}
+                    />
+                    <div className="flex justify-between items-center">
+                      <button
+                        onClick={() => {
+                          handleDeleteFolder(editingFolder.id);
+                          setEditingFolder(null);
+                        }}
+                        className="text-red-600 hover:text-red-700 font-medium text-sm flex items-center gap-1"
+                      >
+                        <Trash2 size={16} /> Delete
+                      </button>
+                      <div className="flex gap-3">
+                        <button
+                          onClick={() => setEditingFolder(null)}
+                          className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (editingFolder.name.trim()) {
+                              handleUpdateFolder(editingFolder.id, { name: editingFolder.name.trim() });
+                              setEditingFolder(null);
+                            }
+                          }}
+                          disabled={!editingFolder.name.trim()}
+                          className="px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:opacity-50"
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               
-              <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                {projects.map((project, index) => (
+              <div 
+                className="bg-white border border-gray-200 rounded-lg shadow-sm min-h-[100px]"
+                onDragOver={handleDragOver}
+                onDrop={handleDropToRoot}
+              >
+                {projectGroups.map(group => {
+                  const groupProjects = projects.filter(p => p.groupId === group.id);
+                  const isExpanded = expandedFolders[group.id] ?? group.isExpanded ?? true;
+                  
+                  return (
+                    <div key={group.id} className="border-b border-gray-100 last:border-0">
+                      <div 
+                        draggable
+                        onDragStart={(e) => handleFolderDragStart(e, group.id)}
+                        className={`flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer ${draggedFolderId === group.id ? 'opacity-50' : ''}`}
+                        onClick={() => toggleFolderExpand(group.id)}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          setAddingToGroupId(group.id);
+                          setIsAddingProject(true);
+                        }}
+                        onDragOver={handleDragOver}
+                        onDrop={(e) => handleDrop(e, group.id, true)}
+                      >
+                        <div className="flex items-center gap-2">
+                          {isExpanded ? <ChevronDown size={18} className="text-gray-500" /> : <ChevronRight size={18} className="text-gray-500" />}
+                          <Folder size={18} className="text-blue-500" />
+                          <span className="font-semibold text-gray-800">{group.name}</span>
+                          <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">{groupProjects.length}</span>
+                        </div>
+                        <div className={`relative ${openDropdownId === group.id ? 'z-10' : ''}`}>
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenDropdownId(openDropdownId === group.id ? null : group.id);
+                            }}
+                            className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-200 transition-colors cursor-pointer"
+                          >
+                            <MoreVertical size={16} />
+                          </button>
+                          {openDropdownId === group.id && (
+                            <div className="absolute right-0 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAddingToGroupId(group.id);
+                                  setIsAddingProject(true);
+                                  setOpenDropdownId(null);
+                                }}
+                                className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                              >
+                                <Plus size={14} /> New Project
+                              </button>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingFolder(group);
+                                  setOpenDropdownId(null);
+                                }}
+                                className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                              >
+                                <Settings size={14} /> Edit
+                              </button>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteFolder(group.id);
+                                  setOpenDropdownId(null);
+                                }}
+                                className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                              >
+                                <Trash2 size={14} /> Delete
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {isExpanded && (
+                        <div className="pl-6">
+                          {groupProjects.length === 0 ? (
+                            <div className="p-4 text-sm text-gray-400 italic">Empty folder. Drag projects here.</div>
+                          ) : (
+                            groupProjects.map((project, index) => (
+                              <div 
+                                key={project.id} 
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, project.id)}
+                                onDragOver={handleDragOver}
+                                onDrop={(e) => handleDrop(e, project.id)}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingProject(project);
+                                }}
+                                className={`flex items-center justify-between p-3 hover:bg-blue-50 transition-colors cursor-move ${draggedProjectId === project.id ? 'opacity-50' : ''} ${index !== groupProjects.length - 1 ? 'border-b border-gray-50' : ''}`}
+                              >
+                                <div className="flex items-center gap-3">
+                                  <span className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: project.color }}></span>
+                                  <span className="font-medium text-gray-700">{project.name}</span>
+                                </div>
+                                <div className={`relative ${openDropdownId === project.id ? 'z-10' : ''}`}>
+                                  <button 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOpenDropdownId(openDropdownId === project.id ? null : project.id);
+                                    }}
+                                    className="text-gray-400 hover:text-gray-700 p-1 rounded hover:bg-gray-200 transition-colors cursor-pointer"
+                                  >
+                                    <MoreVertical size={16} />
+                                  </button>
+                                  {openDropdownId === project.id && (
+                                    <div className="absolute right-0 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                                      <button 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setEditingProject(project);
+                                          setOpenDropdownId(null);
+                                        }}
+                                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                                      >
+                                        <Settings size={14} /> Edit
+                                      </button>
+                                      <button 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (window.confirm("Are you sure you want to delete this project?")) {
+                                            handleDeleteProject(project.id);
+                                          }
+                                          setOpenDropdownId(null);
+                                        }}
+                                        className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                      >
+                                        <Trash2 size={14} /> Delete
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Standalone Projects */}
+                {projects.filter(p => !p.groupId).map((project, index, arr) => (
                   <div 
                     key={project.id} 
                     draggable
                     onDragStart={(e) => handleDragStart(e, project.id)}
                     onDragOver={handleDragOver}
                     onDrop={(e) => handleDrop(e, project.id)}
-                    className={`flex items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg cursor-move ${draggedProjectId === project.id ? 'opacity-50' : ''} ${index !== projects.length - 1 ? 'border-b border-gray-100' : ''}`}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingProject(project);
+                    }}
+                    className={`flex items-center justify-between p-4 hover:bg-gray-50 transition-colors cursor-move ${draggedProjectId === project.id ? 'opacity-50' : ''} ${index !== arr.length - 1 ? 'border-b border-gray-100' : ''}`}
                   >
                     <div className="flex items-center gap-3">
-                      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color }}></span>
+                      <span className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: project.color }}></span>
                       <span className="font-medium text-gray-800">{project.name}</span>
                     </div>
                     <div className={`relative ${openDropdownId === project.id ? 'z-10' : ''}`}>
@@ -1557,17 +2069,19 @@ export default function App() {
                           <button 
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleRenameProject(project.id, project.name);
+                              setEditingProject(project);
                               setOpenDropdownId(null);
                             }}
                             className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
                           >
-                            <Settings size={14} /> Rename
+                            <Settings size={14} /> Edit
                           </button>
                           <button 
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleDeleteProject(project.id);
+                              if (window.confirm("Are you sure you want to delete this project?")) {
+                                handleDeleteProject(project.id);
+                              }
                               setOpenDropdownId(null);
                             }}
                             className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
@@ -1579,6 +2093,11 @@ export default function App() {
                     </div>
                   </div>
                 ))}
+                {projects.length === 0 && projectGroups.length === 0 && (
+                  <div className="p-8 text-center text-gray-500">
+                    No projects yet. Create one to get started!
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1660,7 +2179,7 @@ export default function App() {
                           nonIdle: nonIdleTime,
                           idle: idleTime,
                           percentStr: `${percent}%`,
-                          nonIdleHoursStr: nonIdleTime > 0 ? `${nonIdleHours}h` : ''
+                          nonIdleHoursStr: nonIdleTime > 0 ? nonIdleHours : ''
                         };
                       })
                       .sort((a, b) => a.timestamp - b.timestamp);
@@ -1790,7 +2309,7 @@ export default function App() {
                       };
 
                       return chartData.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                           <PieChart>
                             <Pie
                               data={chartData}
@@ -1896,7 +2415,7 @@ export default function App() {
                           return (
                             <>
                               <div className="h-56 flex-shrink-0 mb-2">
-                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                                   <PieChart>
                                     <Pie
                                       data={drillDownData}
@@ -1980,7 +2499,7 @@ export default function App() {
                       };
 
                       return chartData.length > 0 ? (
-                        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                           <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                             <XAxis 
@@ -2067,7 +2586,7 @@ export default function App() {
                           return (
                             <>
                               <div className="h-56 flex-shrink-0 mb-2">
-                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                                   <BarChart data={drillDownData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                                     <XAxis 
@@ -2518,6 +3037,7 @@ export default function App() {
           <EditEntryModal
             entry={editingEntry}
             projects={projects}
+            projectGroups={projectGroups}
             onSave={handleEditEntrySave}
             onClose={() => setEditingEntry(null)}
             onAddProject={handleAddProject}

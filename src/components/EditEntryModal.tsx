@@ -1,17 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { TimeEntry, Project } from '../types';
+import { TimeEntry, Project, ProjectGroup } from '../types';
 import { ProjectSelector } from './ProjectSelector';
 import { X } from 'lucide-react';
 
 interface Props {
   entry: TimeEntry;
   projects: Project[];
+  projectGroups?: ProjectGroup[];
   onSave: (id: string, updates: Partial<TimeEntry>) => void;
   onClose: () => void;
   onAddProject: (name: string, color: string) => Promise<void>;
 }
 
-export function EditEntryModal({ entry, projects, onSave, onClose, onAddProject }: Props) {
+export function EditEntryModal({ entry, projects, projectGroups = [], onSave, onClose, onAddProject }: Props) {
   const [description, setDescription] = useState(entry.description);
   const [projectId, setProjectId] = useState<string | null>(entry.projectId);
   
@@ -73,6 +74,7 @@ export function EditEntryModal({ entry, projects, onSave, onClose, onAddProject 
             <label className="block text-sm font-medium text-gray-700 mb-1">Project</label>
             <ProjectSelector 
               projects={projects}
+              projectGroups={projectGroups}
               selectedProjectId={projectId}
               onChange={setProjectId}
               onAddProject={onAddProject}
