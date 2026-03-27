@@ -46,8 +46,21 @@ export function EditEntryModal({ entry, projects, projectGroups = [], onSave, on
     });
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      if (e.target instanceof HTMLButtonElement) {
+        return;
+      }
+      e.preventDefault();
+      handleSave();
+    }
+  };
+
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div 
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      onKeyDown={handleKeyDown}
+    >
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md flex flex-col max-h-[90vh]">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
           <h3 className="text-lg font-semibold text-gray-800">
@@ -65,6 +78,7 @@ export function EditEntryModal({ entry, projects, projectGroups = [], onSave, on
               type="text" 
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              autoFocus
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="What were you working on?"
             />

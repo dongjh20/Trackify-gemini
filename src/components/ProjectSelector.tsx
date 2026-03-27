@@ -175,8 +175,11 @@ export function ProjectSelector({ projects, projectGroups = [], selectedProjectI
               onChange={e => setSearchQuery(e.target.value)}
               autoFocus
               onKeyDown={e => {
-                if (e.key === 'Enter' && showCreateOption) {
-                  handleCreate();
+                if (e.key === 'Enter') {
+                  e.stopPropagation();
+                  if (showCreateOption) {
+                    handleCreate();
+                  }
                 }
               }}
             />
