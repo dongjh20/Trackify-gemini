@@ -23,6 +23,7 @@ export type TimeEntry = {
   duration: number;
   userId: string;
   deletedAt?: number;
+  color?: string;
 };
 
 export type DeletedEntry = TimeEntry & {

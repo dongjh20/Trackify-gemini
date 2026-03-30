@@ -1555,7 +1555,8 @@ export default function App() {
                                   e.preventDefault();
                                   setOpenDropdownId(openDropdownId === entry.id ? null : entry.id);
                                 }}
-                                className={`flex flex-col md:flex-row md:items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== dayEntriesList.length - 1 ? 'border-b border-gray-100' : ''}`}
+                                className={`flex flex-col md:flex-row md:items-center justify-between p-4 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== dayEntriesList.length - 1 ? 'border-b border-gray-100' : ''} ${!entry.color ? 'hover:bg-gray-50' : ''}`}
+                                style={{ backgroundColor: entry.color || undefined }}
                               >
                                 <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4 flex-1 mb-3 md:mb-0">
                                   <span className={`text-gray-800 font-medium ${!entry.description ? 'text-gray-400 italic' : ''}`}>
@@ -2986,7 +2987,11 @@ export default function App() {
                     const deletedDate = new Date(entry.deletedAt);
 
                     return (
-                      <div key={entry.id} className={`flex flex-col md:flex-row md:items-center justify-between p-4 hover:bg-gray-50 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== deletedEntries.length - 1 ? 'border-b border-gray-100' : ''}`}>
+                      <div 
+                        key={entry.id} 
+                        className={`flex flex-col md:flex-row md:items-center justify-between p-4 transition-colors first:rounded-t-lg last:rounded-b-lg ${index !== deletedEntries.length - 1 ? 'border-b border-gray-100' : ''} ${!entry.color ? 'hover:bg-gray-50' : ''}`}
+                        style={{ backgroundColor: entry.color || undefined }}
+                      >
                         <div className="flex flex-col gap-1 flex-1">
                           <div className="flex items-center gap-2">
                             <span className={`font-medium ${!entry.description ? 'text-gray-400 italic' : 'text-gray-800'}`}>
