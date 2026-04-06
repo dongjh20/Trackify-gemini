@@ -618,7 +618,7 @@ export default function App() {
         const newEntryRef = doc(collection(db, 'entries'));
         await setDoc(newEntryRef, {
           id: newEntryRef.id,
-          userId: user?.uid,
+          userId: user?.uid || '',
           ...updates
         });
       } else {

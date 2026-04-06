@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { TimeEntry, Project, ProjectGroup } from '../types';
 import { ProjectSelector } from './ProjectSelector';
 import { X, Plus } from 'lucide-react';
@@ -57,7 +57,7 @@ export function EditEntryModal({ entry, projects, projectGroups = [], onSave, on
     setColor(newColor);
   };
 
-  const handleSave = () => {
+  const handleSave = (overrideColor?: string | null) => {
     const startTimestamp = new Date(startTime).getTime();
     const endTimestamp = new Date(endTime).getTime();
     
@@ -66,34 +66,55 @@ export function EditEntryModal({ entry, projects, projectGroups = [], onSave, on
       return;
     }
 
+    const finalColor = overrideColor !== undefined ? overrideColor : (color || null);
+
     onSave(entry.id, {
       description,
-      projectId,
+      projectId: projectId || null,
       startTime: startTimestamp,
       endTime: endTimestamp,
       duration: endTimestamp - startTimestamp,
-      color: color || null
+      color: finalColor || null
     });
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      if (e.target instanceof HTMLButtonElement) {
-        // Allow native enter on specific buttons (like cancel or close)
-        if (e.target.dataset.action === 'cancel' || e.target.dataset.action === 'close') {
-          return;
+  const handleSaveRef = useRef(handleSave);
+  useEffect(() => {
+    handleSaveRef.current = handleSave;
+  });
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        if (document.activeElement instanceof HTMLButtonElement) {
+          if (document.activeElement.dataset.action === 'color') {
+            e.preventDefault();
+            const colorValue = document.activeElement.dataset.color || '';
+            setColor(colorValue);
+            handleSaveRef.current(colorValue);
+            return;
+          }
+          if (document.activeElement.dataset.action !== 'save') {
+            return;
+          }
         }
-        // For color buttons, we blur them on click so this shouldn't hit, but if it does, we can save
+        if (document.activeElement instanceof HTMLInputElement) {
+          if (document.activeElement.placeholder === 'Find or create project...' || document.activeElement.type === 'color') {
+            return;
+          }
+        }
+        e.preventDefault();
+        handleSaveRef.current();
       }
-      e.preventDefault();
-      handleSave();
-    }
-  };
+    };
+    
+    document.addEventListener('keydown', handleGlobalKeyDown);
+    return () => document.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
 
   return (
     <div 
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 transition-colors duration-300"
-      onKeyDown={handleKeyDown}
     >
       <div 
         className="rounded-xl shadow-xl w-full max-w-md flex flex-col max-h-[90vh] transition-colors duration-300"
@@ -165,10 +186,8 @@ export function EditEntryModal({ entry, projects, projectGroups = [], onSave, on
                   <button
                     type="button"
                     data-action="color"
-                    onClick={(e) => {
-                      setColor(c.value);
-                      e.currentTarget.blur(); // Remove focus so Enter key saves the modal
-                    }}
+                    data-color={c.value}
+                    onClick={() => setColor(c.value)}
                     className={`w-8 h-8 rounded-full border-2 flex items-center justify-center transition-transform ${
                       color === c.value ? 'border-gray-600 scale-110' : 'border-black/10 hover:scale-110'
                     }`}
@@ -209,7 +228,7 @@ export function EditEntryModal({ entry, projects, projectGroups = [], onSave, on
             Cancel
           </button>
           <button 
-            onClick={handleSave}
+            onClick={() => handleSave()}
             data-action="save"
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-sm"
           >
